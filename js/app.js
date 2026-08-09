@@ -1,3 +1,20 @@
+function getCleanProxyUrl(targetUrl, userProxy) {
+    if (!userProxy || !userProxy.trim()) {
+        return targetUrl;
+    }
+    let proxy = userProxy.trim();
+    if (proxy.includes('workers.dev') || proxy.includes('?url=') || proxy.includes('url=')) {
+        if (!proxy.includes('url=')) {
+            proxy = proxy.replace(/\/$/, '') + '/?url=';
+        }
+        if (!proxy.endsWith('=')) {
+            proxy = proxy.endsWith('url') ? proxy + '=' : proxy + '&url=';
+        }
+        return proxy + encodeURIComponent(targetUrl);
+    }
+    return proxy.replace(/\/$/, '') + '/' + targetUrl;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     // 页面跳转逻辑 (SPA)
     const navItems = document.querySelectorAll('.nav-item');
@@ -98,15 +115,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // 保存 API 凭证按钮事件
+    // 绑定 API 保存按钮事件
     if (btnSaveApiConfig) {
         btnSaveApiConfig.addEventListener('click', async () => {
             await saveApiConfig();
-            alert('配置保存成功，所有配置均已安全存储在浏览器本地。');
+            alert('配置已成功保存！');
         });
     }
 
-    // --- 新增：API 连通性快速测试逻辑 ---
+    // --- API 测试功能模块 ---
     const btnTestOpenai = document.getElementById('btn-test-openai');
     const statusTestOpenai = document.getElementById('status-test-openai');
 
@@ -143,10 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             try {
                 let targetUrl = url.replace(/\/$/, '') + '/chat/completions';
-                // 拼接跨域代理
-                if (corsProxy) {
-                    targetUrl = corsProxy.replace(/\/$/, '') + '/' + targetUrl;
-                }
+                targetUrl = getCleanProxyUrl(targetUrl, corsProxy); // 👈 使用安全函数拼接
 
                 const headers = { 
                     'Content-Type': 'application/json',
@@ -186,7 +200,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-      // 2. [生图接口测试] 自动识别并拼接 CORS 代理
+    // 2. [生图接口测试] 自动识别并拼接 CORS 代理
     if (btnTestImageV1) {
         btnTestImageV1.addEventListener('click', async () => {
             const url = inputImageV1Url.value.trim();
@@ -203,11 +217,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             try {
                 let genUrl = url.replace(/\/$/, '') + '/images/generations';
-                
-                // 拼接跨域代理
-                if (corsProxy) {
-                    genUrl = corsProxy.replace(/\/$/, '') + '/' + genUrl;
-                }
+                genUrl = getCleanProxyUrl(genUrl, corsProxy); // 👈 使用安全函数拼接
 
                 const headers = { 
                     'Content-Type': 'application/json',
