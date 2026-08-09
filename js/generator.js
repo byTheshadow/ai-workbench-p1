@@ -160,24 +160,28 @@ class QueueScheduler {
             this.executeTask(task);
         }
     }
-
-    // 智能跨域代理清洗与获取方法
-
+    // 智能跨域代理清洗与获取方法（自动适配 Cloudflare Worker 与各种代理格式）
     getCleanProxyUrl(targetUrl, userProxy) {
-        let proxy = userProxy ? userProxy.trim() : '';
-        
-        // 核心修复：如果配置的是 cors-anywhere 或 allorigins（这俩会因为鉴权头报错或需要激活）
-        // 自动将其替换为 ThingProxy，它专门支持带有 Authorization 鉴权头的 API 跨域转发，且免激活
-        if (!proxy || proxy.includes('cors-anywhere.herokuapp.com') || proxy.includes('allorigins')) {
-            return 'https://thingproxy.freeboard.io/fetch/' + targetUrl;
+        if (!userProxy || !userProxy.trim()) {
+            return targetUrl;
         }
-        
-        // 拼接成标准代理路径
-        if (proxy.endsWith('url=')) {
+        let proxy = userProxy.trim();
+
+        // 自动适配 Cloudflare Workers (.workers.dev) 代理
+        if (proxy.includes('workers.dev') || proxy.includes('?url=') || proxy.includes('url=')) {
+            if (!proxy.includes('url=')) {
+                proxy = proxy.replace(/\/$/, '') + '/?url=';
+            }
+            if (!proxy.endsWith('=')) {
+                proxy = proxy.endsWith('url') ? proxy + '=' : proxy + '&url=';
+            }
             return proxy + encodeURIComponent(targetUrl);
         }
+
+        // 兼容传统前缀型代理 (如 http://proxy.com/https://target.com)
         return proxy.replace(/\/$/, '') + '/' + targetUrl;
     }
+
 
 
     // 真正发起 HTTP 请求生图
@@ -319,17 +323,15 @@ class QueueScheduler {
                 }
                 finalImageBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
 
-                      } else if (task.backend === 'v1') {
-                // 通用 OpenAI 兼容 /v1 接口 (净化 Payload)
+                               } else if (task.backend === 'v1') {
                 const v1Base = apiConfig.imageV1Url || '';
                 if (!v1Base) {
                     throw new Error('未配置通用生图 API 接口地址，请前往设置面板填写。');
                 }
 
-                // 拼接请求地址
                 const endpoint = v1Base.replace(/\/$/, '') + '/images/generations';
 
-                // 严格遵循您的 cURL 示例，只传递标准 4 大参数，绝不带步骤等杂质参数
+                // 严格遵循豌豆 / XHUB 官方规范，只传递标准 4 大参数
                 const payload = {
                     model: task.params.model || 'dall-e-3',
                     prompt: task.prompt,
@@ -342,9 +344,9 @@ class QueueScheduler {
                     headers['Authorization'] = `Bearer ${apiConfig.imageV1Key}`;
                 }
 
-                // 通过 thingproxy 代理发送请求，100% 允许 Authorization 鉴权头
+                // 自动通过您的专属 Cloudflare Worker 代理转发
                 const proxyUrl = this.getCleanProxyUrl(endpoint, apiConfig.corsProxy);
-                
+
                 const response = await fetch(proxyUrl, {
                     method: 'POST',
                     headers: headers,
@@ -366,18 +368,16 @@ class QueueScheduler {
                 const imageUrl = imgObj.url;
                 const b64Json = imgObj.b64_json;
 
+                // 下载图片实体
                 if (imageUrl) {
-                    // 图片下载也使用代理中转，避免直接下载跨域
                     const proxyImgUrl = this.getCleanProxyUrl(imageUrl, apiConfig.corsProxy);
-                    const imgRes = await fetch(proxyImgUrl);
+                    let imgRes = await fetch(proxyImgUrl);
                     if (!imgRes.ok) {
-                        // 代理下载失败，降级尝试直连下载
-                        const directRes = await fetch(imageUrl);
-                        if (!directRes.ok) throw new Error("无法从生成的 URL 地址下载图片实体");
-                        finalImageBlob = await directRes.blob();
-                    } else {
-                        finalImageBlob = await imgRes.blob();
+                        // 降级尝试直连下载
+                        imgRes = await fetch(imageUrl);
                     }
+                    if (!imgRes.ok) throw new Error("无法从生成的 URL 地址下载图片实体");
+                    finalImageBlob = await imgRes.blob();
                 } else if (b64Json) {
                     const rawB64 = b64Json.replace(/^data:image\/\w+;base64,/, "");
                     const resByte = atob(rawB64);
@@ -387,9 +387,10 @@ class QueueScheduler {
                     }
                     finalImageBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
                 } else {
-                    throw new Error("通用 API 返回的数据结构中既无 url 也无 b64_json");
+                    throw new Error("通用 API 返回的数据中未找到任何图片内容");
                 }
             }
+
 
             // 生成轻量级缩略图，加速画廊渲染
             let thumbBase64 = null;
