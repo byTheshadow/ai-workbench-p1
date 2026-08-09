@@ -81,6 +81,31 @@ class GalleryDB {
 }
 
 // ==========================================================================
+// 智能跨域代理清洗与获取方法（全局通用，支持前缀模式与 Cloudflare Workers 模式）
+// ==========================================================================
+function getCleanProxyUrl(targetUrl, userProxy) {
+    if (!userProxy || !userProxy.trim()) {
+        return targetUrl;
+    }
+    let proxy = userProxy.trim();
+
+    // 自动识别 Cloudflare Workers 代理格式 (?url=)
+    if (proxy.includes('workers.dev') || proxy.includes('?url=') || proxy.includes('url=')) {
+        if (!proxy.includes('url=')) {
+            proxy = proxy.replace(/\/$/, '') + '/?url=';
+        }
+        if (!proxy.endsWith('=')) {
+            proxy = proxy.endsWith('url') ? proxy + '=' : proxy + '&url=';
+        }
+        // 编码目标 URL，并拼接到 url= 后面（绝对不会有多余的斜杠）
+        return proxy + encodeURIComponent(targetUrl);
+    }
+
+    // 兼容传统前缀型代理
+    return proxy.replace(/\/$/, '') + '/' + targetUrl;
+}
+
+// ==========================================================================
 // 2. 并发队列调度器 (Task Queue Scheduler - 已修复 unshift 报错并支持智能代理路由)
 // ==========================================================================
 class QueueScheduler {
@@ -160,29 +185,6 @@ class QueueScheduler {
             this.executeTask(task);
         }
     }
-    // 智能跨域代理清洗与获取方法（自动适配 Cloudflare Worker 与各种代理格式）
-    getCleanProxyUrl(targetUrl, userProxy) {
-        if (!userProxy || !userProxy.trim()) {
-            return targetUrl;
-        }
-        let proxy = userProxy.trim();
-
-        // 自动适配 Cloudflare Workers (.workers.dev) 代理
-        if (proxy.includes('workers.dev') || proxy.includes('?url=') || proxy.includes('url=')) {
-            if (!proxy.includes('url=')) {
-                proxy = proxy.replace(/\/$/, '') + '/?url=';
-            }
-            if (!proxy.endsWith('=')) {
-                proxy = proxy.endsWith('url') ? proxy + '=' : proxy + '&url=';
-            }
-            return proxy + encodeURIComponent(targetUrl);
-        }
-
-        // 兼容传统前缀型代理 (如 http://proxy.com/https://target.com)
-        return proxy.replace(/\/$/, '') + '/' + targetUrl;
-    }
-
-
 
     // 真正发起 HTTP 请求生图
     async executeTask(task) {
@@ -244,7 +246,7 @@ class QueueScheduler {
                 }
 
                 // NovelAI 强制走免激活代理
-                const proxyUrl = this.getCleanProxyUrl(endpoint, apiConfig.corsProxy);
+                const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
                 const response = await fetch(proxyUrl, {
                     method: 'POST',
                     headers: headers,
@@ -296,7 +298,7 @@ class QueueScheduler {
                         signal: task.controller.signal
                     });
                 } catch (err) {
-                    const proxyUrl = this.getCleanProxyUrl(endpoint, apiConfig.corsProxy);
+                    const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
                     response = await fetch(proxyUrl, {
                         method: 'POST',
                         headers: headers,
@@ -323,7 +325,7 @@ class QueueScheduler {
                 }
                 finalImageBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
 
-                               } else if (task.backend === 'v1') {
+            } else if (task.backend === 'v1') {
                 const v1Base = apiConfig.imageV1Url || '';
                 if (!v1Base) {
                     throw new Error('未配置通用生图 API 接口地址，请前往设置面板填写。');
@@ -345,7 +347,7 @@ class QueueScheduler {
                 }
 
                 // 自动通过您的专属 Cloudflare Worker 代理转发
-                const proxyUrl = this.getCleanProxyUrl(endpoint, apiConfig.corsProxy);
+                const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
 
                 const response = await fetch(proxyUrl, {
                     method: 'POST',
@@ -370,7 +372,7 @@ class QueueScheduler {
 
                 // 下载图片实体
                 if (imageUrl) {
-                    const proxyImgUrl = this.getCleanProxyUrl(imageUrl, apiConfig.corsProxy);
+                    const proxyImgUrl = getCleanProxyUrl(imageUrl, apiConfig.corsProxy);
                     let imgRes = await fetch(proxyImgUrl);
                     if (!imgRes.ok) {
                         // 降级尝试直连下载
@@ -390,7 +392,6 @@ class QueueScheduler {
                     throw new Error("通用 API 返回的数据中未找到任何图片内容");
                 }
             }
-
 
             // 生成轻量级缩略图，加速画廊渲染
             let thumbBase64 = null;
@@ -455,12 +456,9 @@ class QueueScheduler {
             this.schedule();
         }
     }
-
 }
 
 const generatorQueue = new QueueScheduler(5);
-
-
 // ==========================================================================
 // 3. 生图工作室主控管理对象 (StudioManager)
 // ==========================================================================
@@ -503,7 +501,7 @@ window.StudioManager = {
         v1: []
     },
 
-         // 动态拉取服务器模型列表 (已支持 CORS 代理、错误捕获与主流模型本地预设兜底)
+    // 动态拉取服务器模型列表 (已支持 CORS 代理、错误捕获与主流模型本地预设兜底)
     async fetchModelsFromServer(backend, forceRefresh = false) {
         const self = this;
         
@@ -538,9 +536,8 @@ window.StudioManager = {
             if (backend === 'sd') {
                 const sdBaseUrl = apiConfig.sdUrl || 'http://127.0.0.1:7860';
                 let fullUrl = sdBaseUrl.replace(/\/$/, '') + '/sdapi/v1/sd-models';
-                if (apiConfig.corsProxy) {
-                    fullUrl = apiConfig.corsProxy.replace(/\/$/, '') + '/' + fullUrl;
-                }
+                // 统一使用智能代理清洗函数
+                fullUrl = getCleanProxyUrl(fullUrl, apiConfig.corsProxy);
 
                 const headers = { 'Content-Type': 'application/json' };
                 if (apiConfig.sdKey) {
@@ -564,9 +561,8 @@ window.StudioManager = {
                 }
                 
                 let fullUrl = v1Base.replace(/\/$/, '') + '/models';
-                if (apiConfig.corsProxy) {
-                    fullUrl = apiConfig.corsProxy.replace(/\/$/, '') + '/' + fullUrl;
-                }
+                // 统一使用智能代理清洗函数
+                fullUrl = getCleanProxyUrl(fullUrl, apiConfig.corsProxy);
 
                 const headers = {};
                 if (apiConfig.imageV1Key) {
@@ -616,8 +612,7 @@ window.StudioManager = {
         }
     },
 
-
-      renderModelOptions(modelList) {
+    renderModelOptions(modelList) {
         const self = this;
         self.modelSelect.innerHTML = '';
 
@@ -646,8 +641,6 @@ window.StudioManager = {
             self.saveUIToActiveDraft(); // 立即同步存入草稿
         }
     },
-
-
 
     // ==========================================================================
     // 4. UI 绑定与核心初始化 (Studio DOM Binding)
@@ -782,7 +775,7 @@ window.StudioManager = {
         self.bindRatioPresets();
         self.initCustomErrorModal();
 
-               // 初始化悬浮任务监视器 DOM
+        // 初始化悬浮任务监视器 DOM
         self.initQueueMonitorDOM();
 
         // 监听队列状态同步更新 UI 状态与悬浮监视器
@@ -791,7 +784,6 @@ window.StudioManager = {
             self.renderQueueMonitor(state);
         });
 
-
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
         if (activeDraft) {
             await self.fetchModelsFromServer(activeDraft.targetBackend);
@@ -799,12 +791,12 @@ window.StudioManager = {
     },
 
     // 绑定所有的界面事件
-       initEventListeners() {
+    initEventListeners() {
         const self = this;
 
         // 1. 输入内容与参数的双向绑定与自动保存
         const autoSaveInputs = [
-            self.taPrompt, self.taSubject, self.taNegativePrompt, self.taManualArtists, // 新增 taSubject
+            self.taPrompt, self.taSubject, self.taNegativePrompt, self.taManualArtists,
             self.engineSelect, self.modelSelect, self.samplerSelect,
             self.inputWidth, self.inputHeight, self.rangeSteps,
             self.valStepsNum, self.rangeScale, self.valScaleNum,
@@ -827,7 +819,6 @@ window.StudioManager = {
             self.saveUIToActiveDraft();
             self.toggleParametersVisibility(selectedBackend);
             
-            // 👈 新增：如果缓存为空，切换时自动拉取该后端的可用模型
             const cache = self.modelsCache[selectedBackend] || [];
             if (cache.length === 0) {
                 await self.fetchModelsFromServer(selectedBackend, true);
@@ -858,7 +849,6 @@ window.StudioManager = {
                 self.showNotification('未有生成成功的图片 Seed');
             }
         });
-
 
         // 参考图拖拽上传事件
         self.vibeDropzone.addEventListener('dragover', (e) => {
@@ -912,7 +902,6 @@ window.StudioManager = {
         self.btnBatchSelectAll.addEventListener('click', () => {
             const cards = self.galleryGrid.querySelectorAll('.gallery-card');
             if (self.selectedImageIds.length === cards.length) {
-                // 已全选，则全不选
                 cards.forEach(card => card.classList.remove('selected'));
                 self.selectedImageIds = [];
             } else {
@@ -1088,7 +1077,6 @@ window.StudioManager = {
             document.getElementById('studio-negative-section').style.display = 'block';
             document.getElementById('studio-sampler-wrapper').style.display = 'block';
             
-            // 填充 NovelAI 专用采样器
             self.samplerSelect.innerHTML = `
                 <option value="k_euler">Euler (标准快速)</option>
                 <option value="k_euler_ancestral">Euler Ancestral (柔和插值)</option>
@@ -1103,7 +1091,6 @@ window.StudioManager = {
             document.getElementById('studio-negative-section').style.display = 'block';
             document.getElementById('studio-sampler-wrapper').style.display = 'block';
             
-            // SD 常用采样器
             self.samplerSelect.innerHTML = `
                 <option value="k_euler">Euler</option>
                 <option value="k_euler_ancestral">Euler a</option>
@@ -1113,12 +1100,11 @@ window.StudioManager = {
                 <option value="ddim">DDIM</option>
             `;
         } else if (backend === 'v1') {
-            // 通用 API (v1) 裁剪掉负面、采样器和画师控制，但保留比例、相关度、参考图等
             self.advancedControls.style.display = 'block';
             self.naiParamsPanel.style.display = 'none';
-            self.artistLabContainer.style.display = 'none'; // 隐藏画师实验室
-            document.getElementById('studio-negative-section').style.display = 'none'; // 隐藏负面
-            document.getElementById('studio-sampler-wrapper').style.display = 'none'; // 隐藏采样器
+            self.artistLabContainer.style.display = 'none';
+            document.getElementById('studio-negative-section').style.display = 'none';
+            document.getElementById('studio-sampler-wrapper').style.display = 'none';
         }
     },
 
@@ -1156,19 +1142,16 @@ window.StudioManager = {
     // 滑动条和数值输入框的双向同步
     syncParameters() {
         const self = this;
-        // 同步 steps
         if (document.activeElement === self.rangeSteps) {
             self.valStepsNum.value = self.rangeSteps.value;
         } else if (document.activeElement === self.valStepsNum) {
             self.rangeSteps.value = self.valStepsNum.value;
         }
-        // 同步 CFG scale
         if (document.activeElement === self.rangeScale) {
             self.valScaleNum.value = parseFloat(self.rangeScale.value).toFixed(1);
         } else if (document.activeElement === self.valScaleNum) {
             self.rangeScale.value = self.valScaleNum.value;
         }
-        // 同步 vibe strength
         if (document.activeElement === self.vibeStrength) {
             self.vibeStrengthNum.value = parseFloat(self.vibeStrength.value).toFixed(2);
         } else if (document.activeElement === self.vibeStrengthNum) {
@@ -1201,7 +1184,6 @@ window.StudioManager = {
                 self.fetchModelsFromServer(draft.targetBackend);
             });
 
-            // 双击重命名
             span.addEventListener('dblclick', () => {
                 const newName = prompt('重命名草稿为：', draft.name);
                 if (newName && newName.trim() !== '') {
@@ -1211,7 +1193,6 @@ window.StudioManager = {
                 }
             });
 
-            // 删除
             const delBtn = document.createElement('span');
             delBtn.className = 'tab-close-icon';
             delBtn.innerHTML = '&times;';
@@ -1240,7 +1221,6 @@ window.StudioManager = {
             self.draftTabsList.appendChild(tab);
         });
 
-        // 绑定新建按钮
         self.btnAddDraft.onclick = () => {
             self.createNewDraft();
         };
@@ -1255,7 +1235,7 @@ window.StudioManager = {
             id: newId,
             name: `草稿 ${letter}`,
             prompt: '',
-            subject: '', // 新增主旨默认值
+            subject: '',
             negativePrompt: '',
             targetBackend: 'novelai',
             artists: [],
@@ -1288,7 +1268,7 @@ window.StudioManager = {
         if (!activeDraft) return;
 
         self.taPrompt.value = activeDraft.prompt || '';
-        self.taSubject.value = activeDraft.subject || ''; // 载入主旨要求
+        self.taSubject.value = activeDraft.subject || '';
         self.taNegativePrompt.value = activeDraft.negativePrompt || '';
         self.taManualArtists.value = (activeDraft.params && activeDraft.params.manualArtists) ? activeDraft.params.manualArtists : '';
 
@@ -1315,7 +1295,6 @@ window.StudioManager = {
 
         self.toggleParametersVisibility(activeDraft.targetBackend);
 
-        // 绑定参考图预览
         if (activeDraft.params && activeDraft.params.vibeBase64) {
             self.vibePreviewImg.src = activeDraft.params.vibeBase64;
             self.vibePreview.style.display = 'block';
@@ -1328,7 +1307,6 @@ window.StudioManager = {
             self.vibeDropzone.style.display = 'flex';
         }
 
-        // 联动更新采样器及模型值
         if (activeDraft.params && activeDraft.params.sampler) {
             self.samplerSelect.value = activeDraft.params.sampler;
         }
@@ -1344,7 +1322,7 @@ window.StudioManager = {
         if (!activeDraft) return;
 
         activeDraft.prompt = self.taPrompt.value;
-        activeDraft.subject = self.taSubject.value; // 保存主旨内容
+        activeDraft.subject = self.taSubject.value;
         activeDraft.negativePrompt = self.taNegativePrompt.value;
         activeDraft.targetBackend = self.engineSelect.value;
         
@@ -1370,19 +1348,14 @@ window.StudioManager = {
         localStorage.setItem('studio_workbench_active_draft_id', self.activeDraftId);
     },
 
-    /**
-     * 智能编译拼接最终的正向生图提示词 (严格三段式拼接)
-     * 格式：[通用正面词], [主旨要求], [画师串 (依据首尾位置插入)]
-     */
+    // 智能编译拼接最终的正向生图提示词 (严格三段式拼接)
     compileFinalPrompt(draft) {
         const self = this;
         const backend = draft.targetBackend;
 
-        // 1. 获取基础字段
-        let basePrompt = draft.prompt ? draft.prompt.trim() : '';      // 通用正面风格词
-        let subjectText = draft.subject ? draft.subject.trim() : '';    // 核心主旨要求
+        let basePrompt = draft.prompt ? draft.prompt.trim() : '';
+        let subjectText = draft.subject ? draft.subject.trim() : '';
 
-        // 2. 收集双轨画师：手动普通输入 + 画师实验室
         let manualArtistsArr = draft.params.manualArtists 
             ? draft.params.manualArtists.split(',').map(a => a.trim()).filter(Boolean)
             : [];
@@ -1391,7 +1364,6 @@ window.StudioManager = {
         let artistCompiledStr = '';
 
         if (backend === 'novelai') {
-            // NovelAI V4/V4.5 Numeric Emphasis 语法
             const compiledChips = labArtistsArr.map(art => {
                 const w = parseFloat(art.weight || 1.0).toFixed(2);
                 return `${w}::artist:${art.content || art.name}::`;
@@ -1408,7 +1380,6 @@ window.StudioManager = {
             });
             artistCompiledStr = [...compiledManuals, ...compiledChips].join(', ');
         } else {
-            // SD 传统语法
             const compiledChips = labArtistsArr.map(art => {
                 const w = parseFloat(art.weight || 1.0).toFixed(2);
                 return `(artist:${art.content || art.name}:${w})`;
@@ -1420,15 +1391,12 @@ window.StudioManager = {
             artistCompiledStr = [...compiledManuals, ...compiledChips].join(', ');
         }
 
-        // 3. 开始按正确逻辑拼接正向提示词
-        // 初始组合：正前缀提示词 + 本次核心主旨
         let finalPromptArr = [];
         if (basePrompt) finalPromptArr.push(basePrompt);
         if (subjectText) finalPromptArr.push(subjectText);
         
         let corePrompt = finalPromptArr.join(', ');
 
-        // 4. 读取画师注入首尾部设置并执行最终组装
         const injectPosObj = document.querySelector('input[name="artist-inject-pos"]:checked');
         const injectPos = injectPosObj ? injectPosObj.value : 'prefix';
 
@@ -1443,14 +1411,13 @@ window.StudioManager = {
         return corePrompt;
     },
 
-       // 发起生成动作 (解除按钮独占，支持高速并发投递)
+    // 发起生成动作 (解除按钮独占，支持高速并发投递)
     triggerGenerateAction() {
         const self = this;
         self.saveUIToActiveDraft();
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
         if (!activeDraft) return;
 
-        // 按钮轻量反馈 (防手抖 300ms，随后立即解锁)
         if (self.btnGenerate) {
             self.btnGenerate.classList.add('btn-clicked-feedback');
             setTimeout(() => {
@@ -1558,7 +1525,6 @@ window.StudioManager = {
             `;
             document.body.appendChild(monitor);
 
-            // 绑定面板折叠与快捷操作
             const toggleHeader = monitor.querySelector('#queue-monitor-toggle');
             toggleHeader.addEventListener('click', () => {
                 monitor.classList.toggle('collapsed');
@@ -1591,19 +1557,17 @@ window.StudioManager = {
         
         if (totalActive > 0) {
             if (dotIndicator) dotIndicator.classList.add('active-pulse');
-            self.queueMonitor.classList.remove('collapsed'); // 有新任务自动唤起展开
+            self.queueMonitor.classList.remove('collapsed');
         } else {
             if (dotIndicator) dotIndicator.classList.remove('active-pulse');
         }
 
-        // 1. 渲染正在执行与排队列表
         const activeContainer = document.getElementById('queue-active-list');
         if (activeContainer) {
             activeContainer.innerHTML = '';
             if ((!state.active || state.active.length === 0) && (!state.queue || state.queue.length === 0)) {
                 activeContainer.innerHTML = '<div class="queue-empty-text">当前无正在执行的任务</div>';
             } else {
-                // 渲染正在生成的任务
                 (state.active || []).forEach(t => {
                     const row = document.createElement('div');
                     row.className = 'queue-item active';
@@ -1625,7 +1589,6 @@ window.StudioManager = {
                     activeContainer.appendChild(row);
                 });
 
-                // 渲染排队等待的任务
                 (state.queue || []).forEach((t, idx) => {
                     const row = document.createElement('div');
                     row.className = 'queue-item queued';
@@ -1645,7 +1608,6 @@ window.StudioManager = {
             }
         }
 
-        // 2. 渲染已完成与失败任务历史
         const historyContainer = document.getElementById('queue-history-list');
         if (historyContainer) {
             historyContainer.innerHTML = '';
@@ -1697,7 +1659,6 @@ window.StudioManager = {
         }
     },
 
-
     // ==========================================================================
     // 5. 画师实验室交互 (Artist Lab Core)
     // ==========================================================================
@@ -1707,7 +1668,6 @@ window.StudioManager = {
         if (!activeDraft) return;
 
         if (!activeDraft.artists) activeDraft.artists = [];
-        // 防重复
         if (activeDraft.artists.some(a => a.id === artistItem.id || a.name === artistItem.name)) {
             self.showNotification('画师已在工作盘中');
             return;
@@ -1747,7 +1707,6 @@ window.StudioManager = {
             weightVal.className = 'chip-weight-display';
             weightVal.textContent = parseFloat(art.weight).toFixed(2);
 
-            // 滑块控件
             const slider = document.createElement('input');
             slider.type = 'range';
             slider.min = '0.1';
@@ -1762,7 +1721,6 @@ window.StudioManager = {
                 self.saveDraftsToStorage();
             });
 
-            // 移除按钮
             const del = document.createElement('button');
             del.className = 'chip-del-btn';
             del.innerHTML = '&times;';
@@ -1781,13 +1739,11 @@ window.StudioManager = {
         });
     },
 
-    // AI 黄金比例一键配平
     autoBalanceWeights() {
         const self = this;
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
         if (!activeDraft || !activeDraft.artists || activeDraft.artists.length === 0) return;
 
-        // 黄金比例配比：第一位1.25，第二位1.05，第三位0.85，其余0.70
         const scaleList = [1.25, 1.05, 0.85];
         activeDraft.artists.forEach((art, index) => {
             if (index < scaleList.length) {
@@ -1802,18 +1758,15 @@ window.StudioManager = {
         self.showNotification('AI 黄金权重配平成功');
     },
 
-    // 调整风格张力 (高离散/凝聚)
     adjustArtistTension(tensionValue) {
         const self = this;
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
         if (!activeDraft || !activeDraft.artists || activeDraft.artists.length === 0) return;
 
-        // 离散度算法：凝聚度高使所有画师权重逼近 1.0，冲突度高则拉大画师权重的起伏偏离值
         const base = 1.0;
-        const strength = tensionValue / 100.0; // 0.01 - 1.0
+        const strength = tensionValue / 100.0;
 
         activeDraft.artists.forEach((art, idx) => {
-            // 根据索引产生固定的起伏因子
             const offsetFactor = (idx % 2 === 0 ? 0.35 : -0.35);
             art.weight = Math.min(2.0, Math.max(0.1, base + (offsetFactor * strength)));
         });
@@ -1822,12 +1775,10 @@ window.StudioManager = {
         self.renderArtistChips();
     },
 
-    // 双轨 AI 随机权重处理 (手动输入文本 + 画师实验室)
     applyRandomWeights() {
         const self = this;
         let modifiedAny = false;
 
-        // 1. 随机化画师实验室所有芯片的权重
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
         if (activeDraft && activeDraft.artists && activeDraft.artists.length > 0) {
             activeDraft.artists.forEach(art => {
@@ -1837,14 +1788,12 @@ window.StudioManager = {
             modifiedAny = true;
         }
 
-        // 2. 随机化手动文本框里的普通画师权重
         const rawText = self.taManualArtists.value.trim();
         if (rawText) {
             const parts = rawText.split(',').map(p => p.trim()).filter(Boolean);
             const randomizedParts = parts.map(part => {
                 let name = part;
                 
-                // 去除已知格式提取名字
                 if (part.includes('::')) {
                     const match = part.match(/([0-9.]+)::artist:(.*?)::/) || part.match(/([0-9.]+)::(.*?)::/);
                     if (match) name = match[2];
@@ -1853,7 +1802,6 @@ window.StudioManager = {
                     if (match) name = match[1];
                 }
 
-                // 随机出一个 0.6 到 1.4 的权重
                 const randWeight = (Math.random() * (1.4 - 0.6) + 0.6).toFixed(2);
                 const backend = self.engineSelect.value;
                 if (backend === 'novelai') {
@@ -1899,7 +1847,6 @@ window.StudioManager = {
                 return;
             }
 
-            // 保存配方回 Lexicon 的自定义分类 "画师配方" 中
             const globalData = JSON.parse(localStorage.getItem('studio_workbench_data') || '{}');
             if (!globalData.prompts) globalData.prompts = { custom: {} };
             if (!globalData.prompts.custom) globalData.prompts.custom = {};
@@ -1907,7 +1854,6 @@ window.StudioManager = {
                 globalData.prompts.custom['画师配方'] = [];
             }
 
-            // 编译为方便用户点击复用的 Prompt 内容
             const recipePrompt = activeDraft.artists.map(a => {
                 const backend = activeDraft.targetBackend;
                 if (backend === 'novelai') {
@@ -1925,7 +1871,6 @@ window.StudioManager = {
 
             localStorage.setItem('studio_workbench_data', JSON.stringify(globalData));
             
-            // 重置表单并关闭
             document.getElementById('input-recipe-name').value = '';
             document.getElementById('input-recipe-remark').value = '';
             modal.classList.remove('open');
@@ -1951,10 +1896,8 @@ window.StudioManager = {
         const self = this;
         try {
             const list = await GalleryDB.getAll();
-            // 同步顶部数量计数标签
             self.galleryCountLabel.textContent = `共 ${list.length} 张作品`;
             
-            // 绑定分类 Filter 标签页
             const filterTabs = document.querySelectorAll('.engine-filter-tabs .filter-tab-item');
             filterTabs.forEach(tab => {
                 tab.onclick = () => {
@@ -1970,7 +1913,6 @@ window.StudioManager = {
                 };
             });
 
-            // 渲染默认“全部”列表
             const activeFilterObj = document.querySelector('.engine-filter-tabs .filter-tab-item.active');
             const activeFilter = activeFilterObj ? activeFilterObj.dataset.filter : 'all';
             if (activeFilter === 'all') {
@@ -2013,7 +1955,6 @@ window.StudioManager = {
             const img = document.createElement('img');
             img.loading = 'lazy';
             
-            // 优先使用轻量缩略图，没有则降级读取大图 Blob
             if (item.thumb) {
                 img.src = item.thumb;
             } else if (item.imageBlob) {
@@ -2048,11 +1989,9 @@ window.StudioManager = {
             overlayContent.appendChild(infoPrompt);
             overlayContent.appendChild(infoMeta);
 
-            // 操作栏
             const actionContainer = document.createElement('div');
             actionContainer.className = 'overlay-actions';
 
-            // 1. 发送回工作台
             const btnSend = document.createElement('button');
             btnSend.title = '回填参数至工作台';
             btnSend.innerHTML = `
@@ -2065,7 +2004,6 @@ window.StudioManager = {
                 self.sendBackToWorkbench(item);
             };
 
-            // 2. 详情大图
             const btnDetail = document.createElement('button');
             btnDetail.title = '查看完整大图参数';
             btnDetail.innerHTML = `
@@ -2088,7 +2026,6 @@ window.StudioManager = {
             card.appendChild(imgWrapper);
             card.appendChild(overlay);
 
-            // 点击卡片进入批量管理多选
             card.onclick = () => {
                 if (self.batchBar.style.display !== 'none') {
                     if (self.selectedImageIds.includes(item.id)) {
@@ -2100,7 +2037,6 @@ window.StudioManager = {
                     }
                     self.batchSelectedCount.textContent = self.selectedImageIds.length;
                 } else {
-                    // 若未处于批量模式下，点击直接看大图详情
                     self.openLightbox(item);
                 }
             };
@@ -2138,7 +2074,6 @@ window.StudioManager = {
         self.lightboxScale.textContent = item.params.scale || '--';
         self.lightboxSampler.textContent = item.params.sampler || '--';
 
-        // 绑定复制
         document.getElementById('btn-copy-meta-prompt').onclick = () => {
             navigator.clipboard.writeText(item.prompt).then(() => {
                 self.showNotification('提示词已复制到剪贴板');
@@ -2166,7 +2101,6 @@ window.StudioManager = {
         activeDraft.params.seed = item.params.seed;
         activeDraft.params.model = item.params.model || '';
 
-        // NovelAI 专属
         if (item.backend === 'novelai') {
             activeDraft.params.smea = !!item.params.smea;
             activeDraft.params.smeaDyn = !!item.params.smeaDyn;
@@ -2186,7 +2120,6 @@ window.StudioManager = {
         const globalData = JSON.parse(localStorage.getItem('studio_workbench_data') || '{}');
         if (!globalData.todos) globalData.todos = [];
 
-        // 将 Seed 等核心信息挂载为任务内容
         const taskText = `优化图像细节 (Engine: ${item.backend.toUpperCase()} | Seed: ${item.params.seed})`;
         
         globalData.todos.push({
@@ -2238,16 +2171,13 @@ window.StudioManager = {
                 }, 'image/png');
             };
             img.onerror = () => {
-                resolve(blob); // 降级返回原图
+                resolve(blob);
             };
         });
     },
 
     /**
      * 将原始二进制图像转为极轻量的缩略图 Base64 (用于画廊超快速秒开渲染)
-     * @param {Blob} blob 原图二进制
-     * @param {number} maxDimension 缩略图最长边像素 (默认 384px)
-     * @returns {Promise<string>} Base64 WebP/JPEG 格式的缩略图
      */
     async createThumbnail(blob, maxDimension = 384) {
         return new Promise((resolve) => {
@@ -2278,14 +2208,13 @@ window.StudioManager = {
                 ctx.imageSmoothingQuality = 'medium';
                 ctx.drawImage(img, 0, 0, width, height);
 
-                // 输出为高压缩比的 webp 或 jpeg
                 const thumbBase64 = canvas.toDataURL('image/webp', 0.8) || canvas.toDataURL('image/jpeg', 0.8);
                 URL.revokeObjectURL(url);
                 resolve(thumbBase64);
             };
             img.onerror = () => {
                 URL.revokeObjectURL(url);
-                resolve(null); // 降级处理
+                resolve(null);
             };
         });
     },
@@ -2344,7 +2273,6 @@ window.StudioManager = {
             const item = targets[i];
             let blob = item.imageBlob;
             
-            // 如果用户勾选了清除 Exif，执行 Canvas 离屏脱敏
             if (cleanExif) {
                 blob = await self.cleanMetadata(item.imageBlob);
             }
@@ -2439,4 +2367,3 @@ window.StudioManager = {
 document.addEventListener('DOMContentLoaded', () => {
     window.StudioManager.init();
 });
-
