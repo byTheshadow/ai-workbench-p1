@@ -900,7 +900,7 @@ window.StudioManager = {
         });
 
         self.btnBatchSelectAll.addEventListener('click', () => {
-            const cards = self.galleryGrid.querySelectorAll('.gallery-card');
+            const cards = self.galleryGrid.querySelectorAll('.gallery-item-card');
             if (self.selectedImageIds.length === cards.length) {
                 cards.forEach(card => card.classList.remove('selected'));
                 self.selectedImageIds = [];
@@ -1133,7 +1133,7 @@ window.StudioManager = {
         const self = this;
         self.batchBar.style.display = 'none';
         self.btnToggleBatch.textContent = '批量管理';
-        const cards = self.galleryGrid.querySelectorAll('.gallery-card');
+        const cards = self.galleryGrid.querySelectorAll('.gallery-item-card');
         cards.forEach(card => card.classList.remove('selected'));
         self.selectedImageIds = [];
         self.batchSelectedCount.textContent = '0';
@@ -1944,9 +1944,9 @@ window.StudioManager = {
             return;
         }
 
-        items.forEach(item => {
+                items.forEach(item => {
             const card = document.createElement('div');
-            card.className = `gallery-card ${self.selectedImageIds.includes(item.id) ? 'selected' : ''}`;
+            card.className = `gallery-item-card ${self.selectedImageIds.includes(item.id) ? 'selected' : ''}`;
             card.dataset.id = item.id;
 
             const imgWrapper = document.createElement('div');
@@ -1968,18 +1968,18 @@ window.StudioManager = {
             imgWrapper.appendChild(img);
 
             const overlay = document.createElement('div');
-            overlay.className = 'gallery-overlay';
+            overlay.className = 'gallery-hover-overlay';
 
             const overlayContent = document.createElement('div');
             overlayContent.className = 'gallery-overlay-content';
 
             const infoPrompt = document.createElement('p');
-            infoPrompt.className = 'overlay-prompt';
+            infoPrompt.className = 'gallery-prompt-snippet';
             infoPrompt.textContent = item.prompt;
             infoPrompt.title = item.prompt;
 
             const infoMeta = document.createElement('div');
-            infoMeta.className = 'overlay-meta';
+            infoMeta.className = 'gallery-meta-snippet';
             infoMeta.innerHTML = `
                 <span>${item.backend.toUpperCase()}</span>
                 <span>${item.params.width}x${item.params.height}</span>
@@ -1990,14 +1990,16 @@ window.StudioManager = {
             overlayContent.appendChild(infoMeta);
 
             const actionContainer = document.createElement('div');
-            actionContainer.className = 'overlay-actions';
+            actionContainer.className = 'gallery-card-actions';
 
             const btnSend = document.createElement('button');
+            btnSend.className = 'gallery-card-btn';
             btnSend.title = '回填参数至工作台';
             btnSend.innerHTML = `
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8">
                     <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
                 </svg>
+                <span>复用</span>
             `;
             btnSend.onclick = (e) => {
                 e.stopPropagation();
@@ -2005,12 +2007,13 @@ window.StudioManager = {
             };
 
             const btnDetail = document.createElement('button');
+            btnDetail.className = 'gallery-card-btn';
             btnDetail.title = '查看完整大图参数';
             btnDetail.innerHTML = `
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8">
                     <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-                    <line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line>
                 </svg>
+                <span>查看</span>
             `;
             btnDetail.onclick = (e) => {
                 e.stopPropagation();
@@ -2043,6 +2046,7 @@ window.StudioManager = {
 
             self.galleryGrid.appendChild(card);
         });
+
     },
 
     // 开启大图 Lightbox 弹窗

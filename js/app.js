@@ -16,6 +16,7 @@ function getCleanProxyUrl(targetUrl, userProxy) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+
     // 页面跳转逻辑 (SPA)
     const navItems = document.querySelectorAll('.nav-item');
     const panes = document.querySelectorAll('.pane');
@@ -45,6 +46,22 @@ document.addEventListener('DOMContentLoaded', () => {
             aiSidebar.classList.remove('open');
         });
     }
+        // 侧边导航栏折叠/展开与记忆管理
+    const sidebar = document.querySelector('.sidebar');
+    const sidebarToggleBtn = document.getElementById('btn-sidebar-toggle');
+    const savedSidebarState = localStorage.getItem('studio_sidebar_collapsed');
+
+    if (savedSidebarState === 'true' && sidebar) {
+        sidebar.classList.add('collapsed');
+    }
+
+    if (sidebarToggleBtn && sidebar) {
+        sidebarToggleBtn.addEventListener('click', () => {
+            const isCollapsed = sidebar.classList.toggle('collapsed');
+            localStorage.setItem('studio_sidebar_collapsed', isCollapsed ? 'true' : 'false');
+        });
+    }
+
 
     // 主题切换管理
     const themeSelector = document.getElementById('theme-selector');
