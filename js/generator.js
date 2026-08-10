@@ -1,6 +1,6 @@
 /**
  * THE STUDIO WORKBENCH - GENERATOR MODULE
- * 纯前端生图工作室核心逻辑 - 修复与升级整合版
+ * 纯前端生图工作室核心逻辑 - 美化适配与全能兼容整合版
  */
 
 // ==========================================================================
@@ -113,8 +113,8 @@ class QueueScheduler {
         this.maxConcurrency = maxConcurrency;
         this.queue = [];      // 等待执行的任务
         this.active = [];     // 正在执行的任务
-        this.completed = [];  // 近期已完成任务历史 (防 unshift 报错)
-        this.failed = [];     // 近期失败任务历史 (防 unshift 报错)
+        this.completed = [];  // 近期已完成任务历史
+        this.failed = [];     // 近期失败任务历史
         this.listeners = [];  // 队列状态监听器
     }
 
@@ -129,7 +129,6 @@ class QueueScheduler {
             completed: this.completed,
             failed: this.failed
         };
-        // 兼容原有的 UI 状态更新，也同步通知悬浮窗
         this.listeners.forEach(cb => cb(state));
     }
 
@@ -198,7 +197,6 @@ class QueueScheduler {
                 finalSeed = Math.floor(Math.random() * 9999999999);
             }
 
-            // 使用全新经过防跨域、去前缀、多后端兼容的完美发送逻辑
             if (task.backend === 'novelai') {
                 const naiUrl = apiConfig.naiUrl || 'https://api.novelai.net';
                 const endpoint = `${naiUrl.replace(/\/$/, '')}/ai/generate-image`;
@@ -231,7 +229,7 @@ class QueueScheduler {
                     }
                 }
 
-                // 修复 NovelAI Vibe Transfer 参考图片发送逻辑（使用最新官方数组格式并进行去前缀处理）
+                // NovelAI Vibe Transfer 参考图发送逻辑
                 if (task.params.vibeBase64) {
                     const cleanB64 = task.params.vibeBase64.includes('base64,')
                         ? task.params.vibeBase64.split('base64,')[1]
@@ -244,7 +242,6 @@ class QueueScheduler {
                             information_extracted: 1.0
                         }
                     ];
-                    // 冗余旧字段以达成向后最大兼容性
                     payload.parameters.reference_image_multiple = [cleanB64];
                     payload.parameters.reference_strength_multiple = [task.params.vibeStrength || 0.6];
                     payload.parameters.reference_information_extracted_multiple = [1.0];
@@ -255,7 +252,6 @@ class QueueScheduler {
                     headers['Authorization'] = `Bearer ${apiConfig.naiToken}`;
                 }
 
-                // NovelAI 强制走免激活代理
                 const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
                 const response = await fetch(proxyUrl, {
                     method: 'POST',
@@ -280,8 +276,6 @@ class QueueScheduler {
 
             } else if (task.backend === 'sd') {
                 const sdUrl = apiConfig.sdUrl || 'http://127.0.0.1:7860';
-                
-                // 修复 SD 图生图发送：根据是否有参考图动态决定调用端点
                 const hasVibe = !!task.params.vibeBase64;
                 const endpoint = hasVibe
                     ? `${sdUrl.replace(/\/$/, '')}/sdapi/v1/img2img`
@@ -304,7 +298,6 @@ class QueueScheduler {
                         : task.params.vibeBase64;
 
                     payload.init_images = [cleanB64];
-                    // 强度换算：SD 里的 denoising_strength 为重绘幅度，其意义与 reference_strength 相反
                     payload.denoising_strength = Math.max(0, Math.min(1, 1 - (task.params.vibeStrength || 0.6)));
                 }
 
@@ -313,7 +306,6 @@ class QueueScheduler {
                     headers['Authorization'] = `Basic ${btoa(apiConfig.sdAuth)}`;
                 }
 
-                // SD 优先直连，失败走代理
                 let response;
                 try {
                     response = await fetch(endpoint, {
@@ -358,7 +350,6 @@ class QueueScheduler {
 
                 const endpoint = v1Base.replace(/\/$/, '') + '/images/generations';
 
-                // 严格遵循豌豆 / XHUB 官方规范构建基础参数
                 const payload = {
                     model: task.params.model || 'dall-e-3',
                     prompt: task.prompt,
@@ -366,7 +357,6 @@ class QueueScheduler {
                     size: `${task.params.width}x${task.params.height}`
                 };
 
-                // 修复通用 API 引擎参考图发送：携带参考图片 Base64 编码，实现第三方中转站的图生图/Vibe功能
                 if (task.params.vibeBase64) {
                     payload.image = task.params.vibeBase64;
                     payload.init_image = task.params.vibeBase64;
@@ -378,7 +368,6 @@ class QueueScheduler {
                     headers['Authorization'] = `Bearer ${apiConfig.imageV1Key}`;
                 }
 
-                // 自动通过您的专属 Cloudflare Worker 代理转发
                 const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
 
                 const response = await fetch(proxyUrl, {
@@ -402,12 +391,10 @@ class QueueScheduler {
                 const imageUrl = imgObj.url;
                 const b64Json = imgObj.b64_json;
 
-                // 下载图片实体
                 if (imageUrl) {
                     const proxyImgUrl = getCleanProxyUrl(imageUrl, apiConfig.corsProxy);
                     let imgRes = await fetch(proxyImgUrl);
                     if (!imgRes.ok) {
-                        // 降级尝试直连下载
                         imgRes = await fetch(imageUrl);
                     }
                     if (!imgRes.ok) throw new Error("无法从生成的 URL 地址下载图片实体");
@@ -425,13 +412,11 @@ class QueueScheduler {
                 }
             }
 
-            // 生成轻量级缩略图，加速画廊渲染
             let thumbBase64 = null;
             if (window.StudioManager && typeof window.StudioManager.createThumbnail === 'function') {
                 thumbBase64 = await window.StudioManager.createThumbnail(finalImageBlob);
             }
 
-            // 保存到本地 IndexedDB
             const record = {
                 id: task.id,
                 timestamp: task.timestamp,
@@ -456,7 +441,6 @@ class QueueScheduler {
 
             await GalleryDB.save(record);
 
-            // 防崩溃保护式写入历史
             if (!this.completed) this.completed = [];
             task.status = 'completed';
             task.thumb = thumbBase64;
@@ -476,7 +460,6 @@ class QueueScheduler {
         } catch (error) {
             console.error('生图任务执行失败:', error);
             
-            // 防崩溃保护式写入失败历史
             if (!this.failed) this.failed = [];
             task.status = 'failed';
             task.error = error.message || '未知错误';
@@ -500,7 +483,7 @@ window.StudioManager = {
             id: 'draft_default',
             name: '草稿 A',
             prompt: '',
-            subject: '', // 新增主旨默认值
+            subject: '',
             negativePrompt: '',
             targetBackend: 'novelai',
             artists: [],
@@ -533,11 +516,9 @@ window.StudioManager = {
         v1: []
     },
 
-    // 动态拉取服务器模型列表 (已支持 CORS 代理、错误捕获与主流模型本地预设兜底)
+    // 动态拉取服务器模型列表
     async fetchModelsFromServer(backend, forceRefresh = false) {
         const self = this;
-        
-        // 预设的主流通用生图模型列表 (当网络出错、跨域或代理未激活时自动兜底渲染)
         const PRESET_V1_MODELS = [
             { id: 'dall-e-3', name: 'DALL-E 3 (OpenAI)' },
             { id: 'midjourney', name: 'Midjourney (XHUB/兼容)' },
@@ -568,7 +549,6 @@ window.StudioManager = {
             if (backend === 'sd') {
                 const sdBaseUrl = apiConfig.sdUrl || 'http://127.0.0.1:7860';
                 let fullUrl = sdBaseUrl.replace(/\/$/, '') + '/sdapi/v1/sd-models';
-                // 统一使用智能代理清洗函数
                 fullUrl = getCleanProxyUrl(fullUrl, apiConfig.corsProxy);
 
                 const headers = { 'Content-Type': 'application/json' };
@@ -593,7 +573,6 @@ window.StudioManager = {
                 }
                 
                 let fullUrl = v1Base.replace(/\/$/, '') + '/models';
-                // 统一使用智能代理清洗函数
                 fullUrl = getCleanProxyUrl(fullUrl, apiConfig.corsProxy);
 
                 const headers = {};
@@ -605,7 +584,6 @@ window.StudioManager = {
                 if (!response.ok) throw new Error(`生图 models 接口响应异常: Status ${response.status}`);
                 
                 const textData = await response.text();
-                // 校验返回的是否为 HTML 网页（如代理阻断、Cloudflare 盾或 404）
                 if (textData.trim().startsWith('<!DOCTYPE') || textData.trim().startsWith('<html')) {
                     throw new SyntaxError('接口返回了 HTML 网页而非 JSON，可能是 CORS 代理未激活或服务被阻断');
                 }
@@ -621,7 +599,6 @@ window.StudioManager = {
 
             const currentList = self.modelsCache[backend] || [];
             if (currentList.length === 0) {
-                // 如果返回列表为空，触发降级
                 throw new Error('获取的模型列表数据为空');
             } else {
                 self.renderModelOptions(currentList);
@@ -629,8 +606,6 @@ window.StudioManager = {
             }
         } catch (error) {
             console.warn('获取模型失败，启动本地模型降级兜底方案:', error);
-            
-            // 执行优雅降级
             if (backend === 'v1') {
                 self.modelsCache.v1 = PRESET_V1_MODELS;
                 self.renderModelOptions(PRESET_V1_MODELS);
@@ -653,7 +628,6 @@ window.StudioManager = {
             return;
         }
 
-        // 读取当前活跃草稿所保存的模型
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
         const savedModel = (activeDraft && activeDraft.params) ? activeDraft.params.model : '';
 
@@ -667,10 +641,9 @@ window.StudioManager = {
             self.modelSelect.appendChild(opt);
         });
 
-        // 如果草稿中没存选定模型，默认选中第一个
         if (!self.modelSelect.value && self.modelSelect.options.length > 0) {
             self.modelSelect.selectedIndex = 0;
-            self.saveUIToActiveDraft(); // 立即同步存入草稿
+            self.saveUIToActiveDraft();
         }
     },
 
@@ -680,7 +653,6 @@ window.StudioManager = {
     async init() {
         const self = this;
         
-        // 绑定真实的 DOM ID 节点 (彻底对齐 index.html)
         self.btnGenerate = document.getElementById('btn-studio-generate');
         self.btnInterrupt = document.getElementById('btn-studio-interrupt');
         self.btnRandomSeed = document.getElementById('btn-random-seed');
@@ -688,7 +660,7 @@ window.StudioManager = {
         self.btnRefreshModels = document.getElementById('btn-refresh-models');
         
         self.taPrompt = document.getElementById('studio-prompt-input');
-        self.taSubject = document.getElementById('studio-subject-input'); // 新增绑定主旨要求
+        self.taSubject = document.getElementById('studio-subject-input');
         self.taNegativePrompt = document.getElementById('studio-negative-input');
         self.taManualArtists = document.getElementById('studio-artist-manual-input');
         
@@ -696,7 +668,6 @@ window.StudioManager = {
         self.modelSelect = document.getElementById('studio-model-select');
         self.samplerSelect = document.getElementById('param-sampler');
         
-        // 分辨率框
         self.inputWidth = document.getElementById('param-custom-w');
         self.inputHeight = document.getElementById('param-custom-h');
         
@@ -706,7 +677,6 @@ window.StudioManager = {
         self.valScaleNum = document.getElementById('param-scale-num');
         self.inputSeed = document.getElementById('param-seed');
         
-        // 引擎面板与容器
         self.naiParamsPanel = document.getElementById('nai-specific-params');
         self.cbSmea = document.getElementById('param-smea');
         self.cbSmeaDyn = document.getElementById('param-smea-dyn');
@@ -722,7 +692,6 @@ window.StudioManager = {
         self.vibeStrength = document.getElementById('vibe-strength');
         self.vibeStrengthNum = document.getElementById('vibe-strength-num');
 
-        // 画廊节点
         self.galleryGrid = document.getElementById('studio-gallery-grid');
         self.galleryCountLabel = document.getElementById('gallery-count-label');
         self.btnToggleBatch = document.getElementById('btn-toggle-batch-mode');
@@ -735,12 +704,10 @@ window.StudioManager = {
         self.btnBatchCancel = document.getElementById('btn-batch-cancel');
         self.cbCleanMetadata = document.getElementById('cb-clean-metadata');
 
-        // 提示词册导入导出
         self.btnLexiconExport = document.getElementById('btn-lexicon-export');
         self.btnLexiconImportTrigger = document.getElementById('btn-lexicon-import-trigger');
         self.fileLexiconImport = document.getElementById('file-lexicon-import');
 
-        // 画师实验室
         self.artistLabContainer = document.getElementById('studio-artist-lab-container');
         self.btnAutoWeight = document.getElementById('btn-auto-weight');
         self.btnSaveRecipe = document.getElementById('btn-save-recipe');
@@ -749,11 +716,9 @@ window.StudioManager = {
         self.tensionValueDisplay = document.getElementById('tension-value-display');
         self.btnRandomArtistWeight = document.getElementById('btn-random-artist-weight');
 
-        // 草稿标签栏
         self.draftTabsList = document.getElementById('studio-draft-tabs-list');
         self.btnAddDraft = document.getElementById('btn-add-draft');
 
-        // Lightbox
         self.lightbox = document.getElementById('lightbox-modal');
         self.lightboxImg = document.getElementById('lightbox-main-img');
         self.lightboxTimestamp = document.getElementById('lightbox-meta-timestamp');
@@ -774,7 +739,6 @@ window.StudioManager = {
         self.btnLightboxDownload = document.getElementById('btn-lightbox-download');
         self.btnLightboxDelete = document.getElementById('btn-lightbox-delete');
 
-        // 报错弹窗 DOM
         self.errorModal = document.getElementById('error-custom-modal');
         self.errorModalTitle = document.getElementById('error-modal-title');
         self.errorModalMessage = document.getElementById('error-modal-message');
@@ -785,7 +749,6 @@ window.StudioManager = {
         self.selectedImageIds = [];
         self.activeLightboxItem = null;
 
-        // 从 LocalStorage 读取草稿
         const savedDrafts = localStorage.getItem('studio_workbench_drafts');
         if (savedDrafts) {
             try {
@@ -799,7 +762,6 @@ window.StudioManager = {
             self.activeDraftId = savedActiveId;
         }
 
-        // 初始化基本监听器并渲染
         self.initEventListeners();
         self.renderDraftsList();
         self.loadActiveDraftToUI();
@@ -807,10 +769,8 @@ window.StudioManager = {
         self.bindRatioPresets();
         self.initCustomErrorModal();
 
-        // 初始化悬浮任务监视器 DOM
         self.initQueueMonitorDOM();
 
-        // 监听队列状态同步更新 UI 状态与悬浮监视器
         generatorQueue.addEventListener((state) => {
             self.updateGeneratorStatusUI(state.queue, state.active);
             self.renderQueueMonitor(state);
@@ -822,11 +782,9 @@ window.StudioManager = {
         }
     },
 
-    // 绑定所有的界面事件
     initEventListeners() {
         const self = this;
 
-        // 1. 输入内容与参数的双向绑定与自动保存
         const autoSaveInputs = [
             self.taPrompt, self.taSubject, self.taNegativePrompt, self.taManualArtists,
             self.engineSelect, self.modelSelect, self.samplerSelect,
@@ -845,7 +803,6 @@ window.StudioManager = {
             });
         });
 
-        // 引擎切换特殊逻辑：参数显隐及通用 v1 Payload 净化
         self.engineSelect.addEventListener('change', async (e) => {
             const selectedBackend = e.target.value;
             self.saveUIToActiveDraft();
@@ -859,7 +816,6 @@ window.StudioManager = {
             }
         });
 
-        // 手动拉取模型
         self.btnRefreshModels.addEventListener('click', async () => {
             const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
             if (activeDraft) {
@@ -867,7 +823,6 @@ window.StudioManager = {
             }
         });
 
-        // 随机种子与锁定种子
         self.btnRandomSeed.addEventListener('click', () => {
             self.inputSeed.value = -1;
             self.saveUIToActiveDraft();
@@ -882,7 +837,6 @@ window.StudioManager = {
             }
         });
 
-        // 参考图拖拽上传事件
         self.vibeDropzone.addEventListener('dragover', (e) => {
             e.preventDefault();
             self.vibeDropzone.style.borderColor = 'var(--accent-color)';
@@ -917,7 +871,6 @@ window.StudioManager = {
             }
         });
 
-        // 批量多选控制条切换
         self.btnToggleBatch.addEventListener('click', () => {
             if (self.batchBar.style.display === 'none' || !self.batchBar.style.display) {
                 self.batchBar.style.display = 'flex';
@@ -932,7 +885,7 @@ window.StudioManager = {
         });
 
         self.btnBatchSelectAll.addEventListener('click', () => {
-            const cards = self.galleryGrid.querySelectorAll('.gallery-card');
+            const cards = self.galleryGrid.querySelectorAll('.gallery-item-card');
             if (self.selectedImageIds.length === cards.length) {
                 cards.forEach(card => card.classList.remove('selected'));
                 self.selectedImageIds = [];
@@ -964,7 +917,6 @@ window.StudioManager = {
             self.downloadMultipleImages(self.selectedImageIds, cleanExif);
         });
 
-        // 生成与强制中断
         self.btnGenerate.addEventListener('click', () => {
             self.triggerGenerateAction();
         });
@@ -981,7 +933,6 @@ window.StudioManager = {
             }
         });
 
-        // Ctrl + Enter 快捷生成
         document.addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                 if (!self.btnGenerate.disabled) {
@@ -991,14 +942,12 @@ window.StudioManager = {
             }
         });
 
-        // 注入位置与参数联动保存
         document.querySelectorAll('input[name="artist-inject-pos"]').forEach(radio => {
             radio.addEventListener('change', () => {
                 self.saveUIToActiveDraft();
             });
         });
 
-        // 画师风格张力与一键配平绑定
         if (self.artistTensionSlider) {
             self.artistTensionSlider.addEventListener('input', (e) => {
                 const val = parseInt(e.target.value);
@@ -1022,14 +971,12 @@ window.StudioManager = {
             });
         }
 
-        // AI 随机打权重触发
         if (self.btnRandomArtistWeight) {
             self.btnRandomArtistWeight.addEventListener('click', () => {
                 self.applyRandomWeights();
             });
         }
 
-        // Lightbox 交互绑定
         if (self.btnLightboxClose) {
             self.btnLightboxClose.addEventListener('click', () => self.lightbox.classList.remove('open'));
         }
@@ -1076,7 +1023,6 @@ window.StudioManager = {
         });
     },
 
-    // 绑定比例预设与数值转换
     bindRatioPresets() {
         const self = this;
         const buttons = document.querySelectorAll('#ratio-preset-group button');
@@ -1101,7 +1047,6 @@ window.StudioManager = {
         });
     },
 
-    // 针对不同引擎动态隐藏不适宜的参数
     toggleParametersVisibility(backend) {
         const self = this;
         if (backend === 'novelai') {
@@ -1142,7 +1087,6 @@ window.StudioManager = {
         }
     },
 
-    // 处理参考图上传转换 base64
     handleVibeImageUpload(file) {
         const self = this;
         const reader = new FileReader();
@@ -1162,18 +1106,16 @@ window.StudioManager = {
         reader.readAsDataURL(file);
     },
 
-    // 退出批量选择
     exitBatchMode() {
         const self = this;
         self.batchBar.style.display = 'none';
         self.btnToggleBatch.textContent = '批量管理';
-        const cards = self.galleryGrid.querySelectorAll('.gallery-card');
+        const cards = self.galleryGrid.querySelectorAll('.gallery-item-card');
         cards.forEach(card => card.classList.remove('selected'));
         self.selectedImageIds = [];
         self.batchSelectedCount.textContent = '0';
     },
 
-    // 滑动条和数值输入框的双向同步
     syncParameters() {
         const self = this;
         if (document.activeElement === self.rangeSteps) {
@@ -1184,7 +1126,7 @@ window.StudioManager = {
         if (document.activeElement === self.rangeScale) {
             self.valScaleNum.value = parseFloat(self.rangeScale.value).toFixed(1);
         } else if (document.activeElement === self.valScaleNum) {
-            self.rangeSteps.value = self.valScaleNum.value;
+            self.rangeScale.value = self.valScaleNum.value;
         }
         if (document.activeElement === self.vibeStrength) {
             self.vibeStrengthNum.value = parseFloat(self.vibeStrength.value).toFixed(2);
@@ -1199,7 +1141,6 @@ window.StudioManager = {
         }
     },
 
-    // 渲染草稿槽位标签
     renderDraftsList() {
         const self = this;
         self.draftTabsList.innerHTML = '';
@@ -1260,7 +1201,6 @@ window.StudioManager = {
         };
     },
 
-    // 新建草稿
     createNewDraft() {
         const self = this;
         const newId = 'draft_' + Date.now();
@@ -1295,7 +1235,6 @@ window.StudioManager = {
         self.renderDraftsList();
     },
 
-    // 将激活的草稿数据同步到页面上
     loadActiveDraftToUI() {
         const self = this;
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
@@ -1349,7 +1288,6 @@ window.StudioManager = {
         self.renderArtistChips();
     },
 
-    // 抓取页面 UI 参数写入激活草稿
     saveUIToActiveDraft() {
         const self = this;
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
@@ -1382,7 +1320,6 @@ window.StudioManager = {
         localStorage.setItem('studio_workbench_active_draft_id', self.activeDraftId);
     },
 
-    // 智能编译拼接最终的正向生图提示词 (严格三段式拼接)
     compileFinalPrompt(draft) {
         const self = this;
         const backend = draft.targetBackend;
@@ -1445,7 +1382,6 @@ window.StudioManager = {
         return corePrompt;
     },
 
-    // 发起生成动作 (解除按钮独占，支持高速并发投递)
     triggerGenerateAction() {
         const self = this;
         self.saveUIToActiveDraft();
@@ -1485,7 +1421,6 @@ window.StudioManager = {
         self.showNotification(`任务 [${task.draftName}] 已投递至调度队列`);
     },
 
-    // 监控更新生成状态 UI
     updateGeneratorStatusUI(queue = [], active = []) {
         const self = this;
         if (!self.btnGenerate) return;
@@ -1515,181 +1450,159 @@ window.StudioManager = {
         }
     },
 
-    // 自动挂载悬浮监视器骨架
+    // 自动挂载悬浮监控胶囊与侧边抽屉骨架 (完美适配美化 CSS)
     initQueueMonitorDOM() {
         const self = this;
-        let monitor = document.getElementById('floating-queue-monitor');
-        if (!monitor) {
-            monitor = document.createElement('div');
-            monitor.id = 'floating-queue-monitor';
-            monitor.className = 'floating-queue-panel collapsed';
-            monitor.innerHTML = `
-                <div class="queue-header" id="queue-monitor-toggle">
-                    <div class="queue-title-wrap">
-                        <span class="queue-indicator-dot"></span>
-                        <span class="queue-title">QUEUE MONITOR</span>
-                        <span class="queue-badge-count" id="queue-total-count">0</span>
-                    </div>
-                    <div class="queue-header-actions">
-                        <button class="btn-queue-icon" id="btn-toggle-queue-collapse" title="展开/收起">
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                                <polyline points="6 9 12 15 18 9"></polyline>
-                            </svg>
-                        </button>
-                    </div>
+        
+        // 1. 创建队列监控胶囊 (Capsule)
+        let capsule = document.querySelector('.queue-monitor-capsule');
+        if (!capsule) {
+            capsule = document.createElement('div');
+            capsule.className = 'queue-monitor-capsule';
+            capsule.innerHTML = `
+                <span class="queue-status-glow"></span>
+                <svg class="queue-sandglass-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M5 2h14v2c0 2-1 3-3 5l-4 4 4 4c2 2 3 3 3 5v2H5v-2c0-2 1-3 3-5l4-4-4-4c-2-2-3-3-3-5V2z"></path>
+                </svg>
+                <span>QUEUE</span>
+                <span id="queue-capsule-count">0</span>
+            `;
+            document.body.appendChild(capsule);
+            
+            // 点击胶囊唤起侧边栏抽屉
+            capsule.addEventListener('click', () => {
+                const drawer = document.querySelector('.queue-monitor-drawer');
+                if (drawer) drawer.classList.toggle('active');
+            });
+        }
+        self.queueCapsule = capsule;
+
+        // 2. 创建侧边抽屉 (Drawer)
+        let drawer = document.querySelector('.queue-monitor-drawer');
+        if (!drawer) {
+            drawer = document.createElement('div');
+            drawer.className = 'queue-monitor-drawer';
+            drawer.innerHTML = `
+                <div class="queue-drawer-header">
+                    <h3>QUEUE MONITOR</h3>
+                    <button class="btn-cancel-task" id="btn-close-queue-drawer" style="font-size: 1.25rem;">&times;</button>
                 </div>
-                <div class="queue-body" id="queue-monitor-body">
-                    <div class="queue-section">
-                        <div class="queue-section-title">ACTIVE & QUEUED</div>
-                        <div class="queue-list" id="queue-active-list">
-                            <div class="queue-empty-text">当前无正在执行的任务</div>
-                        </div>
-                    </div>
-                    <div class="queue-section">
-                        <div class="queue-section-title">RECENT HISTORY</div>
-                        <div class="queue-list" id="queue-history-list">
-                            <div class="queue-empty-text">暂无已完成的生成历史</div>
-                        </div>
-                    </div>
-                    <div class="queue-footer">
-                        <button class="btn-queue-action" id="btn-queue-cancel-all">TERMINATE ALL</button>
-                        <button class="btn-queue-action" id="btn-queue-clear-history">CLEAR HISTORY</button>
-                    </div>
+                <div class="queue-drawer-list" id="queue-monitor-body">
+                    <div class="queue-empty-text">当前无正在执行的任务</div>
+                </div>
+                <div class="queue-footer" style="padding: 1.5rem; border-top: 1px solid var(--glass-border); display: flex; gap: 0.5rem;">
+                    <button class="batch-buttons-group btn-danger" id="btn-queue-cancel-all" style="flex-grow: 1; padding: 0.5rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; text-align: center; border: none;">TERMINATE ALL</button>
+                    <button class="filter-tab-item active" id="btn-queue-clear-history" style="flex-grow: 1; padding: 0.5rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; border: 1px solid var(--glass-border);">CLEAR HISTORY</button>
                 </div>
             `;
-            document.body.appendChild(monitor);
+            document.body.appendChild(drawer);
 
-            const toggleHeader = monitor.querySelector('#queue-monitor-toggle');
-            toggleHeader.addEventListener('click', () => {
-                monitor.classList.toggle('collapsed');
+            // 关闭抽屉事件
+            drawer.querySelector('#btn-close-queue-drawer').addEventListener('click', () => {
+                drawer.classList.remove('active');
             });
 
-            monitor.querySelector('#btn-queue-cancel-all').addEventListener('click', (e) => {
+            drawer.querySelector('#btn-queue-cancel-all').addEventListener('click', (e) => {
                 e.stopPropagation();
                 generatorQueue.cancelAll();
                 self.showNotification('已强行终止所有排队与生成任务');
             });
 
-            monitor.querySelector('#btn-queue-clear-history').addEventListener('click', (e) => {
+            drawer.querySelector('#btn-queue-clear-history').addEventListener('click', (e) => {
                 e.stopPropagation();
                 generatorQueue.clearHistory();
             });
         }
-        self.queueMonitor = monitor;
+        self.queueDrawer = drawer;
     },
 
-    // 渲染悬浮队列监视器内容
+    // 渲染悬浮队列监视器与抽屉内容
     renderQueueMonitor(state) {
         const self = this;
-        if (!self.queueMonitor) return;
+        if (!self.queueCapsule || !self.queueDrawer) return;
 
         const totalActive = (state.active || []).length + (state.queue || []).length;
-        const countBadge = document.getElementById('queue-total-count');
-        const dotIndicator = self.queueMonitor.querySelector('.queue-indicator-dot');
+        const countCapsuleBadge = document.getElementById('queue-capsule-count');
+        const glowDot = self.queueCapsule.querySelector('.queue-status-glow');
         
-        if (countBadge) countBadge.textContent = totalActive;
+        if (countCapsuleBadge) countCapsuleBadge.textContent = totalActive;
         
+        // 呼吸灯闪烁控制与自动展开
         if (totalActive > 0) {
-            if (dotIndicator) dotIndicator.classList.add('active-pulse');
-            self.queueMonitor.classList.remove('collapsed');
+            if (glowDot) glowDot.style.animation = 'breathingGlow 1.5s infinite ease-in-out';
+            self.queueDrawer.classList.add('active'); // 有新任务自动唤起侧边抽屉
         } else {
-            if (dotIndicator) dotIndicator.classList.remove('active-pulse');
+            if (glowDot) glowDot.style.animation = 'none';
         }
 
-        const activeContainer = document.getElementById('queue-active-list');
-        if (activeContainer) {
-            activeContainer.innerHTML = '';
-            if ((!state.active || state.active.length === 0) && (!state.queue || state.queue.length === 0)) {
-                activeContainer.innerHTML = '<div class="queue-empty-text">当前无正在执行的任务</div>';
-            } else {
-                (state.active || []).forEach(t => {
-                    const row = document.createElement('div');
-                    row.className = 'queue-item active';
-                    row.innerHTML = `
-                        <div class="queue-item-info">
-                            <svg class="spin-icon-generating" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
-                                <circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle>
-                                <path d="M12 2C6.47715 2 2 6.47715 2 12C2 13.578 2.366 15.07 3.017 16.4" stroke-linecap="round"></path>
-                            </svg>
-                            <span class="queue-item-name">${t.draftName || '生图任务'}</span>
-                            <span class="queue-item-meta">${(t.backend || '').toUpperCase()}</span>
-                        </div>
-                        <button class="btn-task-cancel" data-id="${t.id}" title="终止任务">ABORT</button>
-                    `;
-                    row.querySelector('.btn-task-cancel').addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        generatorQueue.cancel(t.id);
-                    });
-                    activeContainer.appendChild(row);
-                });
-
-                (state.queue || []).forEach((t, idx) => {
-                    const row = document.createElement('div');
-                    row.className = 'queue-item queued';
-                    row.innerHTML = `
-                        <div class="queue-item-info">
-                            <span class="queue-order-badge">#${idx + 1}</span>
-                            <span class="queue-item-name">${t.draftName || '生图任务'}</span>
-                        </div>
-                        <button class="btn-task-cancel" data-id="${t.id}" title="取消排队">REMOVE</button>
-                    `;
-                    row.querySelector('.btn-task-cancel').addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        generatorQueue.cancel(t.id);
-                    });
-                    activeContainer.appendChild(row);
-                });
-            }
-        }
-
-        const historyContainer = document.getElementById('queue-history-list');
-        if (historyContainer) {
-            historyContainer.innerHTML = '';
-            const allHistory = [...(state.completed || []), ...(state.failed || [])].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        const container = document.getElementById('queue-monitor-body');
+        if (container) {
+            container.innerHTML = '';
             
+            const allHistory = [
+                ...(state.active || []).map(t => ({ ...t, status: 'generating' })),
+                ...(state.queue || []).map((t, idx) => ({ ...t, status: 'waiting', index: idx + 1 })),
+                ...(state.completed || []),
+                ...(state.failed || [])
+            ];
+
             if (allHistory.length === 0) {
-                historyContainer.innerHTML = '<div class="queue-empty-text">暂无生成历史</div>';
-            } else {
-                allHistory.forEach(item => {
-                    const row = document.createElement('div');
-                    row.className = `queue-item ${item.status}`;
-                    
-                    if (item.status === 'completed') {
-                        row.innerHTML = `
-                            <div class="queue-item-info">
-                                <div class="queue-item-thumb">
-                                    <img src="${item.thumb || ''}" alt="thumb" />
-                                </div>
-                                <div class="queue-item-text">
-                                    <span class="queue-item-name">${item.draftName || '已生成作品'}</span>
-                                    <span class="queue-item-meta">${(item.backend || '').toUpperCase()} · SUCCESS</span>
-                                </div>
-                            </div>
-                        `;
-                        if (item.record) {
-                            row.style.cursor = 'pointer';
-                            row.addEventListener('click', () => {
-                                self.openLightbox(item.record);
-                            });
-                        }
-                    } else if (item.status === 'failed') {
-                        row.innerHTML = `
-                            <div class="queue-item-info">
-                                <span class="queue-status-tag error">FAILED</span>
-                                <div class="queue-item-text">
-                                    <span class="queue-item-name">${item.draftName || '任务'}</span>
-                                    <span class="queue-item-error" title="${item.error || '未知错误'}">${item.error || '生成失败'}</span>
-                                </div>
-                            </div>
-                        `;
-                        row.style.cursor = 'pointer';
-                        row.addEventListener('click', () => {
-                            self.showSystemError('生图任务失败', item.error || '请求异常');
-                        });
-                    }
-                    historyContainer.appendChild(row);
-                });
+                container.innerHTML = '<div class="queue-empty-text">当前无正在执行的任务</div>';
+                return;
             }
+
+            allHistory.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'queue-task-item';
+                
+                let statusLabel = (item.status || '').toUpperCase();
+                let statusClass = item.status;
+                let excerpt = item.prompt || '正在载入参数...';
+
+                // 生成状态与进度控制逻辑
+                let progressHtml = '';
+                if (item.status === 'generating') {
+                    progressHtml = `
+                        <div class="task-progress-track">
+                            <div class="task-progress-bar" style="width: 60%; background: #4dadf7; animation: pulse-status 1.2s infinite ease-in-out; height: 100%;"></div>
+                        </div>
+                    `;
+                }
+
+                card.innerHTML = `
+                    <div class="queue-task-meta">
+                        <span class="task-backend-badge">${(item.backend || 'API').toUpperCase()}</span>
+                        <span class="task-status-text ${statusClass}">${statusLabel} ${item.index ? '#' + item.index : ''}</span>
+                    </div>
+                    <div class="task-prompt-excerpt">${excerpt}</div>
+                    ${progressHtml}
+                    ${(item.status === 'generating' || item.status === 'waiting') ? `<button class="btn-cancel-task" data-id="${item.id}">CANCEL</button>` : ''}
+                `;
+
+                // 绑定单个取消事件
+                const cancelBtn = card.querySelector('.btn-cancel-task');
+                if (cancelBtn) {
+                    cancelBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        generatorQueue.cancel(item.id);
+                    });
+                }
+
+                // 点击已完成的卡片大图预览
+                if (item.status === 'completed' && item.record) {
+                    card.style.cursor = 'pointer';
+                    card.addEventListener('click', () => {
+                        self.openLightbox(item.record);
+                    });
+                } else if (item.status === 'failed') {
+                    card.style.cursor = 'pointer';
+                    card.addEventListener('click', () => {
+                        self.showSystemError('生图任务失败', item.error || '请求异常');
+                    });
+                }
+
+                container.appendChild(card);
+            });
         }
     },
 
@@ -1924,7 +1837,7 @@ window.StudioManager = {
     },
 
     // ==========================================================================
-    // 6. 画廊局部刷新与交互 (Gallery Core UI)
+    // 6. 画廊局部刷新与交互 (Gallery Core UI - 完全对齐美化 CSS)
     // ==========================================================================
     async refreshGallery() {
         const self = this;
@@ -1979,8 +1892,9 @@ window.StudioManager = {
         }
 
         items.forEach(item => {
+            // 完美对齐美化类名：.gallery-item-card
             const card = document.createElement('div');
-            card.className = `gallery-card ${self.selectedImageIds.includes(item.id) ? 'selected' : ''}`;
+            card.className = `gallery-item-card ${self.selectedImageIds.includes(item.id) ? 'selected' : ''}`;
             card.dataset.id = item.id;
 
             const imgWrapper = document.createElement('div');
@@ -2001,37 +1915,38 @@ window.StudioManager = {
 
             imgWrapper.appendChild(img);
 
+            // 完美对齐美化类名：.gallery-hover-overlay
             const overlay = document.createElement('div');
-            overlay.className = 'gallery-overlay';
+            overlay.className = 'gallery-hover-overlay';
 
-            const overlayContent = document.createElement('div');
-            overlayContent.className = 'gallery-overlay-content';
-
+            // 提示词摘要对齐类名：.gallery-prompt-snippet
             const infoPrompt = document.createElement('p');
-            infoPrompt.className = 'overlay-prompt';
+            infoPrompt.className = 'gallery-prompt-snippet';
             infoPrompt.textContent = item.prompt;
             infoPrompt.title = item.prompt;
 
+            // 元数据对齐类名：.gallery-meta-snippet
             const infoMeta = document.createElement('div');
-            infoMeta.className = 'overlay-meta';
+            infoMeta.className = 'gallery-meta-snippet';
             infoMeta.innerHTML = `
                 <span>${item.backend.toUpperCase()}</span>
                 <span>${item.params.width}x${item.params.height}</span>
                 <span>SEED: ${item.params.seed}</span>
             `;
 
-            overlayContent.appendChild(infoPrompt);
-            overlayContent.appendChild(infoMeta);
-
+            // 操作组对齐类名：.gallery-card-actions
             const actionContainer = document.createElement('div');
-            actionContainer.className = 'overlay-actions';
+            actionContainer.className = 'gallery-card-actions';
 
+            // 按钮样式对齐：.gallery-card-btn
             const btnSend = document.createElement('button');
+            btnSend.className = 'gallery-card-btn';
             btnSend.title = '回填参数至工作台';
             btnSend.innerHTML = `
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
                 </svg>
+                <span>填入</span>
             `;
             btnSend.onclick = (e) => {
                 e.stopPropagation();
@@ -2039,12 +1954,14 @@ window.StudioManager = {
             };
 
             const btnDetail = document.createElement('button');
+            btnDetail.className = 'gallery-card-btn';
             btnDetail.title = '查看完整大图参数';
             btnDetail.innerHTML = `
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
                     <line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line>
                 </svg>
+                <span>参数</span>
             `;
             btnDetail.onclick = (e) => {
                 e.stopPropagation();
@@ -2054,7 +1971,8 @@ window.StudioManager = {
             actionContainer.appendChild(btnSend);
             actionContainer.appendChild(btnDetail);
 
-            overlay.appendChild(overlayContent);
+            overlay.appendChild(infoPrompt);
+            overlay.appendChild(infoMeta);
             overlay.appendChild(actionContainer);
 
             card.appendChild(imgWrapper);
@@ -2079,7 +1997,6 @@ window.StudioManager = {
         });
     },
 
-    // 开启大图 Lightbox 弹窗
     openLightbox(item) {
         const self = this;
         self.activeLightboxItem = item;
@@ -2117,7 +2034,6 @@ window.StudioManager = {
         self.lightbox.classList.add('open');
     },
 
-    // 一键复用参数回工作台
     async sendBackToWorkbench(item) {
         const self = this;
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
@@ -2148,7 +2064,6 @@ window.StudioManager = {
         window.scrollTo({ top: 0, behavior: 'smooth' });
     },
 
-    // 新增功能：一键创建后续待办任务
     createFollowUpTask(item) {
         const self = this;
         const globalData = JSON.parse(localStorage.getItem('studio_workbench_data') || '{}');
@@ -2170,7 +2085,6 @@ window.StudioManager = {
         }
     },
 
-    // 并行生成4张变体
     triggerRollVariations(item) {
         const self = this;
         self.showNotification('开始以该参数并行生成4张不同 Seed 变体...');
@@ -2188,7 +2102,6 @@ window.StudioManager = {
         }
     },
 
-    // 利用 Canvas 擦除图像 Exif 信息，确保原图干净导出 (Exif Clean)
     async cleanMetadata(blob) {
         return new Promise((resolve) => {
             const img = new Image();
@@ -2210,9 +2123,6 @@ window.StudioManager = {
         });
     },
 
-    /**
-     * 将原始二进制图像转为极轻量的缩略图 Base64 (用于画廊超快速秒开渲染)
-     */
     async createThumbnail(blob, maxDimension = 384) {
         return new Promise((resolve) => {
             const img = new Image();
@@ -2274,9 +2184,6 @@ window.StudioManager = {
         URL.revokeObjectURL(url);
     },
 
-    /**
-     * 批量下载图片 (已整合 JSZip 打包与 Exif/Metadata 剥离)
-     */
     async downloadMultipleImages(ids, cleanExif = false) {
         const self = this;
         const all = await GalleryDB.getAll();
