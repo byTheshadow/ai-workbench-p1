@@ -106,374 +106,333 @@ function getCleanProxyUrl(targetUrl, userProxy) {
 }
 
 // ==========================================================================
-// 2. 并发队列调度器 (Task Queue Scheduler - 已修复 unshift 报错并支持智能代理路由)
+// 2. 并发队列调度器 (Task Queue Scheduler - 支持智能代理路由与生命周期事件钩子)
 // ==========================================================================
 class QueueScheduler {
-    constructor(maxConcurrency = 5) {
-        this.maxConcurrency = maxConcurrency;
-        this.queue = [];      // 等待执行的任务
-        this.active = [];     // 正在执行的任务
-        this.completed = [];  // 近期已完成任务历史
-        this.failed = [];     // 近期失败任务历史
-        this.listeners = [];  // 队列状态监听器
+    constructor() {
+        this.tasks = [];
+        this.running = [];
+        this.completed = [];
+        this.failed = [];
+        this.maxConcurrent = 5;
     }
 
-    addEventListener(callback) {
-        this.listeners.push(callback);
-    }
-
-    notify() {
-        const state = {
-            queue: this.queue,
-            active: this.active,
-            completed: this.completed,
-            failed: this.failed
-        };
-        this.listeners.forEach(cb => cb(state));
-    }
-
-    enqueue(task) {
+    add(task) {
         task.id = task.id || 'task_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
         task.timestamp = task.timestamp || Date.now();
         task.status = 'queued';
         task.controller = new AbortController();
 
-        this.queue.push(task);
-        this.notify();
-        this.schedule();
+        this.tasks.push(task);
+        if (this.onTaskAdded) this.onTaskAdded(task);
+        this.run();
     }
 
-    cancel(id) {
-        const index = this.queue.findIndex(t => t.id === id);
-        if (index > -1) {
-            this.queue.splice(index, 1);
-            this.notify();
-            return;
-        }
+    async run() {
+        if (this.running.length >= this.maxConcurrent) return;
+        if (this.tasks.length === 0) return;
 
-        const activeTask = this.active.find(t => t.id === id);
-        if (activeTask) {
-            activeTask.controller.abort();
-            this.active = this.active.filter(t => t.id !== id);
-            this.notify();
-            this.schedule();
-        }
-    }
+        const task = this.tasks.shift();
+        task.status = 'generating';
+        this.running.push(task);
+        if (this.onTaskStart) this.onTaskStart(task);
 
-    cancelAll() {
-        this.queue = [];
-        this.active.forEach(task => {
-            if (task.controller) task.controller.abort();
-        });
-        this.active = [];
-        this.notify();
-    }
-
-    clearHistory() {
-        this.completed = [];
-        this.failed = [];
-        this.notify();
-    }
-
-    schedule() {
-        while (this.active.length < this.maxConcurrency && this.queue.length > 0) {
-            const task = this.queue.shift();
-            task.status = 'generating';
-            this.active.push(task);
-            this.notify();
-            this.executeTask(task);
-        }
-    }
-
-    // 真正发起 HTTP 请求生图
-    async executeTask(task) {
         try {
-            const globalData = JSON.parse(localStorage.getItem('studio_workbench_data') || '{}');
-            const apiConfig = globalData.apiConfig || {};
-
-            let finalImageBlob = null;
-            let finalSeed = task.params.seed;
-            if (finalSeed === -1 || !finalSeed) {
-                finalSeed = Math.floor(Math.random() * 9999999999);
-            }
-
-            if (task.backend === 'novelai') {
-                const naiUrl = apiConfig.naiUrl || 'https://api.novelai.net';
-                const endpoint = `${naiUrl.replace(/\/$/, '')}/ai/generate-image`;
-
-                const payload = {
-                    input: task.prompt,
-                    model: task.params.model || 'nai-diffusion-3',
-                    action: 'generate',
-                    parameters: {
-                        width: task.params.width,
-                        height: task.params.height,
-                        scale: task.params.scale,
-                        sampler: task.params.sampler || 'k_euler',
-                        steps: task.params.steps,
-                        seed: finalSeed,
-                        n_samples: 1,
-                        legacy: false,
-                        add_original_image: true,
-                        uncond_scale: 1,
-                        cfg_rescale: 0,
-                        noise: 0,
-                        negative_prompt: task.params.negativePrompt || ''
-                    }
-                };
-
-                if (task.params.smea) {
-                    payload.parameters.sm = true;
-                    if (task.params.smeaDyn) {
-                        payload.parameters.sm_dyn = true;
-                    }
-                }
-
-                // NovelAI Vibe Transfer 参考图发送逻辑
-                if (task.params.vibeBase64) {
-                    const cleanB64 = task.params.vibeBase64.includes('base64,')
-                        ? task.params.vibeBase64.split('base64,')[1]
-                        : task.params.vibeBase64;
-
-                    payload.parameters.reference_images = [
-                        {
-                            image: cleanB64,
-                            strength: task.params.vibeStrength || 0.6,
-                            information_extracted: 1.0
-                        }
-                    ];
-                    payload.parameters.reference_image_multiple = [cleanB64];
-                    payload.parameters.reference_strength_multiple = [task.params.vibeStrength || 0.6];
-                    payload.parameters.reference_information_extracted_multiple = [1.0];
-                }
-
-                const headers = { 'Content-Type': 'application/json' };
-                if (apiConfig.naiToken) {
-                    headers['Authorization'] = `Bearer ${apiConfig.naiToken}`;
-                }
-
-                const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
-                const response = await fetch(proxyUrl, {
-                    method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify(payload),
-                    signal: task.controller.signal
-                });
-
-                if (!response.ok) {
-                    const errText = await response.text();
-                    throw new Error(`NovelAI 远端报错: Status ${response.status} - ${errText}`);
-                }
-
-                const zipData = await response.arrayBuffer();
-                const zip = new JSZip();
-                const unzipped = await zip.loadAsync(zipData);
-                const keys = Object.keys(unzipped.files);
-                if (keys.length === 0) {
-                    throw new Error('NovelAI 返回包中未找到任何解压文件。');
-                }
-                finalImageBlob = await unzipped.files[keys[0]].async('blob');
-
-            } else if (task.backend === 'sd') {
-                const sdUrl = apiConfig.sdUrl || 'http://127.0.0.1:7860';
-                const hasVibe = !!task.params.vibeBase64;
-                const endpoint = hasVibe
-                    ? `${sdUrl.replace(/\/$/, '')}/sdapi/v1/img2img`
-                    : `${sdUrl.replace(/\/$/, '')}/sdapi/v1/txt2img`;
-
-                const payload = {
-                    prompt: task.prompt,
-                    negative_prompt: task.params.negativePrompt || '',
-                    steps: task.params.steps,
-                    cfg_scale: task.params.scale,
-                    width: task.params.width,
-                    height: task.params.height,
-                    seed: finalSeed,
-                    sampler_name: task.params.sampler || 'Euler a'
-                };
-
-                if (hasVibe) {
-                    const cleanB64 = task.params.vibeBase64.includes('base64,')
-                        ? task.params.vibeBase64.split('base64,')[1]
-                        : task.params.vibeBase64;
-
-                    payload.init_images = [cleanB64];
-                    payload.denoising_strength = Math.max(0, Math.min(1, 1 - (task.params.vibeStrength || 0.6)));
-                }
-
-                const headers = { 'Content-Type': 'application/json' };
-                if (apiConfig.sdAuth) {
-                    headers['Authorization'] = `Basic ${btoa(apiConfig.sdAuth)}`;
-                }
-
-                let response;
-                try {
-                    response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: headers,
-                        body: JSON.stringify(payload),
-                        signal: task.controller.signal
-                    });
-                } catch (err) {
-                    const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
-                    response = await fetch(proxyUrl, {
-                        method: 'POST',
-                        headers: headers,
-                        body: JSON.stringify(payload),
-                        signal: task.controller.signal
-                    });
-                }
-
-                if (!response.ok) {
-                    const errText = await response.text();
-                    throw new Error(`SD WebUI 报错: Status ${response.status} - ${errText}`);
-                }
-
-                const result = await response.json();
-                if (!result.images || result.images.length === 0) {
-                    throw new Error('SD 响应正常，但未包含生成的图像数组。');
-                }
-
-                const rawB64 = result.images[0];
-                const resByte = atob(rawB64);
-                const byteNumbers = new Array(resByte.length);
-                for (let i = 0; i < resByte.length; i++) {
-                    byteNumbers[i] = resByte.charCodeAt(i);
-                }
-                finalImageBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
-
-            } else if (task.backend === 'v1') {
-                const v1Base = apiConfig.imageV1Url || '';
-                if (!v1Base) {
-                    throw new Error('未配置通用生图 API 接口地址，请前往设置面板填写。');
-                }
-
-                const endpoint = v1Base.replace(/\/$/, '') + '/images/generations';
-
-                const payload = {
-                    model: task.params.model || 'dall-e-3',
-                    prompt: task.prompt,
-                    n: 1,
-                    size: `${task.params.width}x${task.params.height}`
-                };
-
-                if (task.params.vibeBase64) {
-                    payload.image = task.params.vibeBase64;
-                    payload.init_image = task.params.vibeBase64;
-                    payload.image_strength = task.params.vibeStrength || 0.6;
-                }
-
-                const headers = { 'Content-Type': 'application/json' };
-                if (apiConfig.imageV1Key) {
-                    headers['Authorization'] = `Bearer ${apiConfig.imageV1Key}`;
-                }
-
-                const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
-
-                const response = await fetch(proxyUrl, {
-                    method: 'POST',
-                    headers: headers,
-                    body: JSON.stringify(payload),
-                    signal: task.controller.signal
-                });
-
-                if (!response.ok) {
-                    const errText = await response.text();
-                    throw new Error(`通用生图 API 报错: Status ${response.status} - ${errText}`);
-                }
-
-                const result = await response.json();
-                if (!result.data || result.data.length === 0) {
-                    throw new Error('通用 API 响应正常，但 data 图像列表为空。');
-                }
-
-                const imgObj = result.data[0];
-                const imageUrl = imgObj.url;
-                const b64Json = imgObj.b64_json;
-
-                if (imageUrl) {
-                    const proxyImgUrl = getCleanProxyUrl(imageUrl, apiConfig.corsProxy);
-                    let imgRes = await fetch(proxyImgUrl);
-                    if (!imgRes.ok) {
-                        imgRes = await fetch(imageUrl);
-                    }
-                    if (!imgRes.ok) throw new Error("无法从生成的 URL 地址下载图片实体");
-                    finalImageBlob = await imgRes.blob();
-                } else if (b64Json) {
-                    const rawB64 = b64Json.replace(/^data:image\/\w+;base64,/, "");
-                    const resByte = atob(rawB64);
-                    const byteNumbers = new Array(resByte.length);
-                    for (let i = 0; i < resByte.length; i++) {
-                        byteNumbers[i] = resByte.charCodeAt(i);
-                    }
-                    finalImageBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
-                } else {
-                    throw new Error("通用 API 返回的数据中未找到任何图片内容");
-                }
-            }
-
-            let thumbBase64 = null;
-            if (window.StudioManager && typeof window.StudioManager.createThumbnail === 'function') {
-                thumbBase64 = await window.StudioManager.createThumbnail(finalImageBlob);
-            }
-
-            const record = {
-                id: task.id,
-                timestamp: task.timestamp,
-                backend: task.backend,
-                prompt: task.prompt,
-                negativePrompt: task.params.negativePrompt || '',
-                params: {
-                    width: task.params.width,
-                    height: task.params.height,
-                    steps: task.params.steps,
-                    scale: task.params.scale,
-                    sampler: task.params.sampler,
-                    seed: finalSeed,
-                    model: task.params.model || '',
-                    smea: task.params.smea || false,
-                    smeaDyn: task.params.smeaDyn || false,
-                    vibeStrength: task.params.vibeStrength || 0.6
-                },
-                thumb: thumbBase64,
-                imageBlob: finalImageBlob
-            };
-
-            await GalleryDB.save(record);
-
+            const result = await this.processTask(task);
+            this.running = this.running.filter(t => t.id !== task.id);
             if (!this.completed) this.completed = [];
-            task.status = 'completed';
-            task.thumb = thumbBase64;
-            task.record = record;
-            this.completed.unshift(task);
-            if (this.completed.length > 10) this.completed.pop();
-
-            this.active = this.active.filter(t => t.id !== task.id);
-            this.notify();
-            this.schedule();
-
-            if (window.StudioManager) {
-                window.StudioManager.refreshGallery();
-                window.StudioManager.lastSuccessfulSeed = finalSeed;
-            }
-
-        } catch (error) {
-            console.error('生图任务执行失败:', error);
             
+            task.status = 'completed';
+            this.completed.unshift({ task, result });
+            if (this.completed.length > 10) this.completed.pop();
+            
+            if (this.onTaskComplete) this.onTaskComplete(task, result);
+        } catch (error) {
+            this.running = this.running.filter(t => t.id !== task.id);
             if (!this.failed) this.failed = [];
+            
             task.status = 'failed';
             task.error = error.message || '未知错误';
-            this.failed.unshift(task);
+            this.failed.unshift({ task, error });
             if (this.failed.length > 10) this.failed.pop();
-
-            this.active = this.active.filter(t => t.id !== task.id);
-            this.notify();
-            this.schedule();
+            
+            if (this.onTaskFailed) this.onTaskFailed(task, error);
+        } finally {
+            this.run();
         }
+    }
+    
+    // 该方法由 Generator 实例化时动态覆盖或代理，以下保留占位声明
+    async processTask(task) {
+        // 由外界覆盖
     }
 }
 
-const generatorQueue = new QueueScheduler(5);
+const generatorQueue = new QueueScheduler();
+
+// 为 generatorQueue 挂载真正的 HTTP 生图请求逻辑
+generatorQueue.processTask = async function(task) {
+    const globalData = JSON.parse(localStorage.getItem('studio_workbench_data') || '{}');
+    const apiConfig = globalData.apiConfig || {};
+
+    let finalImageBlob = null;
+    let finalSeed = task.params.seed;
+    if (finalSeed === -1 || !finalSeed) {
+        finalSeed = Math.floor(Math.random() * 9999999999);
+    }
+
+    if (task.backend === 'novelai') {
+        const naiUrl = apiConfig.naiUrl || 'https://api.novelai.net';
+        const endpoint = `${naiUrl.replace(/\/$/, '')}/ai/generate-image`;
+
+        const payload = {
+            input: task.prompt,
+            model: task.params.model || 'nai-diffusion-3',
+            action: 'generate',
+            parameters: {
+                width: task.params.width,
+                height: task.params.height,
+                scale: task.params.scale,
+                sampler: task.params.sampler || 'k_euler',
+                steps: task.params.steps,
+                seed: finalSeed,
+                n_samples: 1,
+                legacy: false,
+                add_original_image: true,
+                uncond_scale: 1,
+                cfg_rescale: 0,
+                noise: 0,
+                negative_prompt: task.params.negativePrompt || ''
+            }
+        };
+
+        if (task.params.smea) {
+            payload.parameters.sm = true;
+            if (task.params.smeaDyn) {
+                payload.parameters.sm_dyn = true;
+            }
+        }
+
+        // NovelAI Vibe Transfer 参考图发送逻辑
+        if (task.params.vibeBase64) {
+            const cleanB64 = task.params.vibeBase64.includes('base64,')
+                ? task.params.vibeBase64.split('base64,')[1]
+                : task.params.vibeBase64;
+
+            payload.parameters.reference_images = [
+                {
+                    image: cleanB64,
+                    strength: task.params.vibeStrength || 0.6,
+                    information_extracted: 1.0
+                }
+            ];
+            payload.parameters.reference_image_multiple = [cleanB64];
+            payload.parameters.reference_strength_multiple = [task.params.vibeStrength || 0.6];
+            payload.parameters.reference_information_extracted_multiple = [1.0];
+        }
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiConfig.naiToken) {
+            headers['Authorization'] = `Bearer ${apiConfig.naiToken}`;
+        }
+
+        const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
+        const response = await fetch(proxyUrl, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(payload),
+            signal: task.controller.signal
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`NovelAI 远端报错: Status ${response.status} - ${errText}`);
+        }
+
+        const zipData = await response.arrayBuffer();
+        const zip = new JSZip();
+        const unzipped = await zip.loadAsync(zipData);
+        const keys = Object.keys(unzipped.files);
+        if (keys.length === 0) {
+            throw new Error('NovelAI 返回包中未找到任何解压文件。');
+        }
+        finalImageBlob = await unzipped.files[keys[0]].async('blob');
+
+    } else if (task.backend === 'sd') {
+        const sdUrl = apiConfig.sdUrl || 'http://127.0.0.1:7860';
+        const hasVibe = !!task.params.vibeBase64;
+        const endpoint = hasVibe
+            ? `${sdUrl.replace(/\/$/, '')}/sdapi/v1/img2img`
+            : `${sdUrl.replace(/\/$/, '')}/sdapi/v1/txt2img`;
+
+        const payload = {
+            prompt: task.prompt,
+            negative_prompt: task.params.negativePrompt || '',
+            steps: task.params.steps,
+            cfg_scale: task.params.scale,
+            width: task.params.width,
+            height: task.params.height,
+            seed: finalSeed,
+            sampler_name: task.params.sampler || 'Euler a'
+        };
+
+        if (hasVibe) {
+            const cleanB64 = task.params.vibeBase64.includes('base64,')
+                ? task.params.vibeBase64.split('base64,')[1]
+                : task.params.vibeBase64;
+
+            payload.init_images = [cleanB64];
+            payload.denoising_strength = Math.max(0, Math.min(1, 1 - (task.params.vibeStrength || 0.6)));
+        }
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiConfig.sdAuth) {
+            headers['Authorization'] = `Basic ${btoa(apiConfig.sdAuth)}`;
+        }
+
+        let response;
+        try {
+            response = await fetch(endpoint, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(payload),
+                signal: task.controller.signal
+            });
+        } catch (err) {
+            const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
+            response = await fetch(proxyUrl, {
+                method: 'POST',
+                headers: headers,
+                body: JSON.stringify(payload),
+                signal: task.controller.signal
+            });
+        }
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`SD WebUI 报错: Status ${response.status} - ${errText}`);
+        }
+
+        const result = await response.json();
+        if (!result.images || result.images.length === 0) {
+            throw new Error('SD 响应正常，但未包含生成的图像数组。');
+        }
+
+        const rawB64 = result.images[0];
+        const resByte = atob(rawB64);
+        const byteNumbers = new Array(resByte.length);
+        for (let i = 0; i < resByte.length; i++) {
+            byteNumbers[i] = resByte.charCodeAt(i);
+        }
+        finalImageBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
+
+    } else if (task.backend === 'v1') {
+        const v1Base = apiConfig.imageV1Url || '';
+        if (!v1Base) {
+            throw new Error('未配置通用生图 API 接口地址，请前往设置面板填写。');
+        }
+
+        const endpoint = v1Base.replace(/\/$/, '') + '/images/generations';
+
+        const payload = {
+            model: task.params.model || 'dall-e-3',
+            prompt: task.prompt,
+            n: 1,
+            size: `${task.params.width}x${task.params.height}`
+        };
+
+        if (task.params.vibeBase64) {
+            payload.image = task.params.vibeBase64;
+            payload.init_image = task.params.vibeBase64;
+            payload.image_strength = task.params.vibeStrength || 0.6;
+        }
+
+        const headers = { 'Content-Type': 'application/json' };
+        if (apiConfig.imageV1Key) {
+            headers['Authorization'] = `Bearer ${apiConfig.imageV1Key}`;
+        }
+
+        const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
+
+        const response = await fetch(proxyUrl, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(payload),
+            signal: task.controller.signal
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`通用生图 API 报错: Status ${response.status} - ${errText}`);
+        }
+
+        const result = await response.json();
+        if (!result.data || result.data.length === 0) {
+            throw new Error('通用 API 响应正常，但 data 图像列表为空。');
+        }
+
+        const imgObj = result.data[0];
+        const imageUrl = imgObj.url;
+        const b64Json = imgObj.b64_json;
+
+        if (imageUrl) {
+            const proxyImgUrl = getCleanProxyUrl(imageUrl, apiConfig.corsProxy);
+            let imgRes = await fetch(proxyImgUrl);
+            if (!imgRes.ok) {
+                imgRes = await fetch(imageUrl);
+            }
+            if (!imgRes.ok) throw new Error("无法从生成的 URL 地址下载图片实体");
+            finalImageBlob = await imgRes.blob();
+        } else if (b64Json) {
+            const rawB64 = b64Json.replace(/^data:image\/\w+;base64,/, "");
+            const resByte = atob(rawB64);
+            const byteNumbers = new Array(resByte.length);
+            for (let i = 0; i < resByte.length; i++) {
+                byteNumbers[i] = resByte.charCodeAt(i);
+            }
+            finalImageBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
+        } else {
+            throw new Error("通用 API 返回的数据中未找到任何图片内容");
+        }
+    }
+
+    let thumbBase64 = null;
+    if (window.StudioManager && typeof window.StudioManager.createThumbnail === 'function') {
+        thumbBase64 = await window.StudioManager.createThumbnail(finalImageBlob);
+    }
+
+    const record = {
+        id: task.id,
+        timestamp: task.timestamp,
+        backend: task.backend,
+        prompt: task.prompt,
+        negativePrompt: task.params.negativePrompt || '',
+        params: {
+            width: task.params.width,
+            height: task.params.height,
+            steps: task.params.steps,
+            scale: task.params.scale,
+            sampler: task.params.sampler,
+            seed: finalSeed,
+            model: task.params.model || '',
+            smea: task.params.smea || false,
+            smeaDyn: task.params.smeaDyn || false,
+            vibeStrength: task.params.vibeStrength || 0.6
+        },
+        thumb: thumbBase64,
+        imageBlob: finalImageBlob
+    };
+
+    await GalleryDB.save(record);
+
+    if (window.StudioManager) {
+        window.StudioManager.refreshGallery();
+        window.StudioManager.lastSuccessfulSeed = finalSeed;
+    }
+
+    return record;
+};
+
 // ==========================================================================
 // 3. 生图工作室主控管理对象 (StudioManager)
 // ==========================================================================
@@ -745,6 +704,17 @@ window.StudioManager = {
         self.btnCloseErrorModal = document.getElementById('btn-close-error-modal');
         self.btnCopyErrorLog = document.getElementById('btn-copy-error-log');
 
+        // 绑定悬浮队列监视器相关 DOM 节点
+        self.queueCapsule = document.getElementById('queue-monitor-capsule');
+        self.queueStatusText = document.getElementById('queue-status-text');
+        self.queueDrawer = document.getElementById('queue-monitor-drawer');
+        self.queueDrawerList = document.getElementById('queue-drawer-list');
+        self.btnCloseQueueDrawer = document.getElementById('btn-close-queue-drawer');
+        self.btnClearQueueAll = document.getElementById('btn-clear-queue-all');
+        self.queueSandglassIcon = document.querySelector('.queue-sandglass-icon');
+
+        self.generatorQueue = generatorQueue;
+
         self.lastSuccessfulSeed = -1;
         self.selectedImageIds = [];
         self.activeLightboxItem = null;
@@ -768,13 +738,6 @@ window.StudioManager = {
         self.refreshGallery();
         self.bindRatioPresets();
         self.initCustomErrorModal();
-
-        self.initQueueMonitorDOM();
-
-        generatorQueue.addEventListener((state) => {
-            self.updateGeneratorStatusUI(state.queue, state.active);
-            self.renderQueueMonitor(state);
-        });
 
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
         if (activeDraft) {
@@ -924,10 +887,10 @@ window.StudioManager = {
         self.btnGenerate.disabled = false;
 
         self.btnInterrupt.addEventListener('click', () => {
-            const activeTasks = [...generatorQueue.active];
+            const activeTasks = [...generatorQueue.running];
             if (activeTasks.length > 0) {
                 activeTasks.forEach(task => {
-                    generatorQueue.cancel(task.id);
+                    if (task.controller) task.controller.abort();
                 });
                 self.showNotification('已发送强行中断信号');
             }
@@ -1021,6 +984,64 @@ window.StudioManager = {
                 self.lightbox.classList.remove('open');
             }
         });
+
+        // 1. 胶囊和抽屉的开关交互
+        if (self.queueCapsule) {
+            self.queueCapsule.addEventListener('click', (e) => {
+                // 如果是拖拽动作刚结束，就不触发展开，防止误触
+                if (self.queueCapsule.dataset.dragging === 'true') {
+                    self.queueCapsule.dataset.dragging = 'false';
+                    return;
+                }
+                
+                if (self.queueDrawer) {
+                    const isOpen = self.queueDrawer.classList.toggle('open');
+                    if (isOpen) {
+                        self.alignQueueDrawerPos();
+                        self.updateQueueMonitorUI();
+                    }
+                }
+            });
+        }
+
+        if (self.btnCloseQueueDrawer && self.queueDrawer) {
+            self.btnCloseQueueDrawer.addEventListener('click', (e) => {
+                e.stopPropagation();
+                self.queueDrawer.classList.remove('open');
+            });
+        }
+
+        // 2. 队列一键全部终止
+        if (self.btnClearQueueAll) {
+            self.btnClearQueueAll.addEventListener('click', (e) => {
+                e.stopPropagation();
+                self.terminateAllQueueTasks();
+            });
+        }
+
+        // 3. 启用平滑拖拽功能
+        if (self.queueCapsule) {
+            self.setupQueueCapsuleDraggable();
+        }
+
+        // 4. 订阅调度队列的生命周期
+        const handleQueueUpdate = () => {
+            self.updateQueueMonitorUI();
+        };
+
+        self.generatorQueue.onTaskAdded = handleQueueUpdate;
+        self.generatorQueue.onTaskStart = handleQueueUpdate;
+        self.generatorQueue.onTaskComplete = (task, result) => {
+            handleQueueUpdate();
+            self.checkQueueAndReleaseButton();
+        };
+        self.generatorQueue.onTaskFailed = (task, error) => {
+            handleQueueUpdate();
+            self.checkQueueAndReleaseButton();
+        };
+
+        // 默认检测一次，确保状态显示正确
+        self.updateQueueMonitorUI();
     },
 
     bindRatioPresets() {
@@ -1417,7 +1438,7 @@ window.StudioManager = {
             }
         };
 
-        generatorQueue.enqueue(task);
+        generatorQueue.add(task);
         self.showNotification(`任务 [${task.draftName}] 已投递至调度队列`);
     },
 
@@ -1450,66 +1471,255 @@ window.StudioManager = {
         }
     },
 
-     initQueueMonitorDOM() {
+    // ==========================================================================
+    // 队列监视器辅助逻辑 (拖拽、位置对齐、一键终止、UI更新)
+    // ==========================================================================
+    checkQueueAndReleaseButton() {
         const self = this;
-        
-        // 只创建队列监控胶囊 (Capsule)，不创建抽屉
-        let capsule = document.querySelector('.queue-monitor-capsule');
-        if (!capsule) {
-            capsule = document.createElement('div');
-            capsule.className = 'queue-monitor-capsule';
-            capsule.innerHTML = `
-                <span class="queue-status-glow"></span>
-                <svg class="queue-sandglass-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M5 2h14v2c0 2-1 3-3 5l-4 4 4 4c2 2 3 3 3 5v2H5v-2c0-2 1-3 3-5l4-4-4-4c-2-2-3-3-3-5V2z"></path>
-                </svg>
-                <span>QUEUE</span>
-                <span id="queue-capsule-count">0</span>
-            `;
-            document.body.appendChild(capsule);
-            
-            // 使用已有的 showSystemError 弹窗显示统计数据
-            capsule.addEventListener('click', () => {
-                const active = (generatorQueue.active || []).length;
-                const queue = (generatorQueue.queue || []).length;
-                const completed = (generatorQueue.completed || []).length;
-                const failed = (generatorQueue.failed || []).length;
-                
-                const msg = `正在生成: ${active}\n排队中: ${queue}\n已完成: ${completed}\n失败: ${failed}`;
-                
-                self.showSystemError('队列状态', msg);
-            });
-        }
-        self.queueCapsule = capsule;
-        
-        // 移除旧抽屉相关 DOM
-        const oldDrawer = document.querySelector('.queue-monitor-drawer');
-        if (oldDrawer) {
-            oldDrawer.remove();
-        }
-        self.queueDrawer = null;
+        const running = self.generatorQueue.running || [];
+        const tasks = self.generatorQueue.tasks || [];
+        self.updateGeneratorStatusUI(tasks, running);
     },
 
-    renderQueueMonitor(state) {
+    // 初始化悬浮监视器胶囊的可拖拽能力
+    setupQueueCapsuleDraggable() {
+        const self = this;
+        const capsule = self.queueCapsule;
+        let pos1 = 0, pos2 = 0, pos3 = 0, pos4 = 0;
+        let dragThreshold = false;
+
+        capsule.onmousedown = dragMouseDown;
+        capsule.ontouchstart = dragTouchStart;
+
+        function dragMouseDown(e) {
+            e = e || window.event;
+            // 排除按钮点击事件
+            if (e.target.closest('button')) return;
+            e.preventDefault();
+            
+            pos3 = e.clientX;
+            pos4 = e.clientY;
+            dragThreshold = false;
+            capsule.dataset.dragging = 'false';
+
+            document.onmouseup = closeDragElement;
+            document.onmousemove = elementDrag;
+        }
+
+        function dragTouchStart(e) {
+            if (e.target.closest('button')) return;
+            pos3 = e.touches[0].clientX;
+            pos4 = e.touches[0].clientY;
+            dragThreshold = false;
+            capsule.dataset.dragging = 'false';
+
+            document.ontouchend = closeDragElement;
+            document.ontouchmove = elementTouchDrag;
+        }
+
+        function elementDrag(e) {
+            e = e || window.event;
+            e.preventDefault();
+            moveAt(e.clientX, e.clientY);
+        }
+
+        function elementTouchDrag(e) {
+            moveAt(e.touches[0].clientX, e.touches[0].clientY);
+        }
+
+        function moveAt(clientX, clientY) {
+            pos1 = pos3 - clientX;
+            pos2 = pos4 - clientY;
+            pos3 = clientX;
+            pos4 = clientY;
+
+            // 移动距离大于 3px 则视作拖动，防止误触点击
+            if (Math.abs(pos1) > 2 || Math.abs(pos2) > 2) {
+                dragThreshold = true;
+                capsule.dataset.dragging = 'true';
+            }
+
+            let newTop = capsule.offsetTop - pos2;
+            let newLeft = capsule.offsetLeft - pos1;
+
+            // 越界检查
+            newTop = Math.max(10, Math.min(window.innerHeight - capsule.offsetHeight - 10, newTop));
+            newLeft = Math.max(10, Math.min(window.innerWidth - capsule.offsetWidth - 10, newLeft));
+
+            capsule.style.top = newTop + "px";
+            capsule.style.left = newLeft + "px";
+            capsule.style.bottom = "auto";
+            capsule.style.right = "auto";
+
+            // 拖动时抽屉实时对齐
+            self.alignQueueDrawerPos();
+        }
+
+        function closeDragElement() {
+            document.onmouseup = null;
+            document.onmousemove = null;
+            document.ontouchend = null;
+            document.ontouchmove = null;
+        }
+    },
+
+    // 动态计算并将抽屉放置在胶囊的上方或合适位置
+    alignQueueDrawerPos() {
+        const self = this;
+        if (!self.queueCapsule || !self.queueDrawer) return;
+
+        const capsuleRect = self.queueCapsule.getBoundingClientRect();
+        const drawerWidth = 320;
+        
+        // 将抽屉精准放置在胶囊的正上方，水平居中或偏右侧
+        let topPos = capsuleRect.top - self.queueDrawer.offsetHeight - 12;
+        let leftPos = capsuleRect.left + (capsuleRect.width / 2) - (drawerWidth / 2);
+
+        // 防溢出边界修正
+        if (topPos < 10) {
+            // 如果上方放不下，就把抽屉放到胶囊下方
+            topPos = capsuleRect.bottom + 12;
+        }
+        if (leftPos < 10) leftPos = 10;
+        if (leftPos + drawerWidth > window.innerWidth - 10) {
+            leftPos = window.innerWidth - drawerWidth - 10;
+        }
+
+        self.queueDrawer.style.top = topPos + "px";
+        self.queueDrawer.style.left = leftPos + "px";
+        self.queueDrawer.style.bottom = "auto";
+        self.queueDrawer.style.right = "auto";
+    },
+
+    // 一键终止所有正在运行或排队中的任务
+    terminateAllQueueTasks() {
+        const self = this;
+        let cancelCount = 0;
+
+        // 1. 中断正在执行的任务
+        self.generatorQueue.running.forEach(task => {
+            if (task.controller) {
+                task.controller.abort();
+                cancelCount++;
+            }
+        });
+        self.generatorQueue.running = [];
+
+        // 2. 清空队列等待区的任务
+        cancelCount += self.generatorQueue.tasks.length;
+        self.generatorQueue.tasks = [];
+
+        self.updateQueueMonitorUI();
+        self.showNotification(`已终止所有 ${cancelCount} 个排队或运行中的任务`);
+    },
+
+    // 订阅任务状态并更新右下角队列监视器的核心渲染函数
+    updateQueueMonitorUI() {
         const self = this;
         if (!self.queueCapsule) return;
 
-        const totalActive = (state.active || []).length + (state.queue || []).length;
-        const countCapsuleBadge = document.getElementById('queue-capsule-count');
-        const glowDot = self.queueCapsule.querySelector('.queue-status-glow');
-        
-        if (countCapsuleBadge) countCapsuleBadge.textContent = totalActive;
-        
-        // 呼吸灯闪烁控制
-        if (totalActive > 0) {
-            if (glowDot) glowDot.style.animation = 'breathingGlow 1.5s infinite ease-in-out';
-        } else {
-            if (glowDot) glowDot.style.animation = 'none';
-        }
-        
-        // 不再渲染抽屉内容
-    },
+        const runningTasks = self.generatorQueue.running || [];
+        const waitingTasks = self.generatorQueue.tasks || [];
+        const completedTasks = self.generatorQueue.completed || [];
+        const failedTasks = self.generatorQueue.failed || [];
 
+        const totalActive = runningTasks.length;
+        const totalPending = waitingTasks.length;
+        
+        // 1. 更新胶囊文字 (正在运行/上限 并附带等待数)
+        let statusText = `${totalActive}/${self.generatorQueue.maxConcurrent} ACTIVE`;
+        if (totalPending > 0) {
+            statusText += ` (${totalPending} QUEUED)`;
+        }
+        self.queueStatusText.textContent = statusText;
+
+        // 2. 控制胶囊的显示与动画
+        if (totalActive > 0 || totalPending > 0) {
+            self.queueCapsule.style.display = 'flex';
+            // 添加旋转效果指示正在生图
+            if (self.queueSandglassIcon) self.queueSandglassIcon.classList.add('spinning');
+        } else {
+            // 没有任务时，如果是空闲状态，在抽屉没有打开的情况下，自动隐藏胶囊按钮
+            if (self.queueSandglassIcon) self.queueSandglassIcon.classList.remove('spinning');
+            
+            if (self.queueDrawer && !self.queueDrawer.classList.contains('open')) {
+                self.queueCapsule.style.display = 'none';
+            } else {
+                // 如果详情抽屉开着，继续显示胶囊，文本为 IDLE
+                self.queueStatusText.textContent = "IDLE (0/5)";
+                self.queueCapsule.style.display = 'flex';
+            }
+        }
+
+        // 3. 渲染详情抽屉列表
+        if (self.queueDrawerList) {
+            self.queueDrawerList.innerHTML = '';
+
+            const allItems = [];
+            
+            // 加入正在生成的任务
+            runningTasks.forEach(t => allItems.push({ task: t, status: 'active' }));
+            // 加入排队中的任务
+            waitingTasks.forEach(t => allItems.push({ task: t, status: 'queued' }));
+            // 加入最近完成的任务
+            completedTasks.slice(0, 5).forEach(item => allItems.push({ task: item.task, status: 'completed' }));
+            // 加入最近失败的任务
+            failedTasks.slice(0, 5).forEach(item => allItems.push({ task: item.task, status: 'failed', error: item.error }));
+
+            if (allItems.length === 0) {
+                self.queueDrawerList.innerHTML = '<p class="queue-empty-text">当前无等待或运行中的生图任务</p>';
+                return;
+            }
+
+            allItems.forEach(item => {
+                const row = document.createElement('div');
+                row.className = `queue-task-row ${item.status}`;
+
+                // 提取任务提示词摘要作为名字
+                const titleSummary = item.task.prompt ? item.task.prompt.substring(0, 24) + '...' : '未命名任务';
+                const timeStr = new Date(item.task.id).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+                row.innerHTML = `
+                    <div class="task-info">
+                        <span class="task-time">${timeStr}</span>
+                        <span class="task-title" title="${item.task.prompt || ''}">${titleSummary}</span>
+                        <span class="task-badge badge-${item.status}">${item.status.toUpperCase()}</span>
+                    </div>
+                `;
+
+                // 如果是进行中或排队中的任务，允许单独中止
+                if (item.status === 'active' || item.status === 'queued') {
+                    const btnAbort = document.createElement('button');
+                    btnAbort.className = 'btn-abort-task';
+                    btnAbort.title = '终止该任务';
+                    btnAbort.innerHTML = `
+                        <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" stroke-width="2" fill="none">
+                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    `;
+                    btnAbort.onclick = (e) => {
+                        e.stopPropagation();
+                        if (item.task.controller) {
+                            item.task.controller.abort();
+                        }
+                        // 手动移出队列
+                        if (item.status === 'active') {
+                            self.generatorQueue.running = self.generatorQueue.running.filter(t => t.id !== item.task.id);
+                        } else {
+                            self.generatorQueue.tasks = self.generatorQueue.tasks.filter(t => t.id !== item.task.id);
+                        }
+                        self.updateQueueMonitorUI();
+                        self.showNotification('任务已手动终止');
+                    };
+                    row.appendChild(btnAbort);
+                } else if (item.status === 'failed') {
+                    row.title = item.error ? item.error.message || item.error : '未知错误';
+                }
+
+                self.queueDrawerList.appendChild(row);
+            });
+        }
+    },
 
     // ==========================================================================
     // 5. 画师实验室交互 (Artist Lab Core)
@@ -2003,7 +2213,7 @@ window.StudioManager = {
                     seed: Math.floor(Math.random() * 9999999999)
                 }
             };
-            generatorQueue.enqueue(task);
+            generatorQueue.add(task);
         }
     },
 
@@ -2213,4 +2423,3 @@ window.StudioManager = {
 document.addEventListener('DOMContentLoaded', () => {
     window.StudioManager.init();
 });
-
