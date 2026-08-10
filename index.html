@@ -98,7 +98,16 @@
                             </button>
                         </div>
 
-                                                                    <div class="draft-content-container">
+        
+                                                                        <div class="draft-content-container">
+    <!-- 新增：沉浸式编辑器入口按钮 -->
+    <button id="btn-open-composer" class="btn-outline btn-small btn-composer-trigger" style="width: 100%; margin-bottom: 1.25rem; justify-content: center; gap: 0.4rem;">
+        <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="1.5" fill="none">
+            <path d="M15 3h6v6M10 14L21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+        </svg>
+        <span>沉浸式编辑器 (ZEN COMPOSER)</span>
+    </button>
+
                             <!-- 1. 新增：主旨/生成要求 (CORE SUBJECT) 高阶包裹器 -->
                           <div class="subject-input-wrapper">
     <label for="studio-subject-input">本次主旨要求 (Core Subject)</label>
@@ -1135,5 +1144,68 @@
     <!-- 本地加载以规避浏览器的 Tracking Prevention 追踪拦截 -->
 <script src="js/jszip.min.js"></script>
     <script src="js/generator.js"></script>
+        <!-- ========================================================================== -->
+    <!-- 沉浸式提示词编辑器弹窗 (STUDIO COMPOSER) -->
+    <!-- ========================================================================== -->
+    <div id="studio-composer-modal" class="composer-modal-backdrop">
+        <div class="composer-modal-content">
+            <div class="composer-modal-header">
+                <div>
+                    <h3>STUDIO COMPOSER</h3>
+                    <p class="subtitle">IMMERSIVE PROMPT EDITOR</p>
+                </div>
+                <button class="btn-close-composer" id="btn-close-composer" title="关闭编辑器 (Esc)">
+                    <svg viewBox="0 0 24 24" width="20" height="20" stroke="currentColor" stroke-width="1.5" fill="none">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+            
+            <div class="composer-modal-body">
+                <!-- 左侧：主要输入编辑区 -->
+                <div class="composer-fields">
+                    <div class="composer-field-group">
+                        <label for="composer-subject">主旨要求 (Core Subject)</label>
+                        <textarea id="composer-subject" rows="2" placeholder="输入本次生成的核心主体或场景，例如: 1girl, white hair, fantasy armor"></textarea>
+                    </div>
+                    <div class="composer-field-group">
+                        <label for="composer-prompt">风格前缀提示词 (Style Prompt)</label>
+                        <textarea id="composer-prompt" rows="6" placeholder="输入正面风格提示词、修饰词、画师组合组合等..."></textarea>
+                    </div>
+                    <div class="composer-field-group">
+                        <label for="composer-negative">排除元素 (Negative Prompt)</label>
+                        <textarea id="composer-negative" rows="3" placeholder="输入不想出现的元素，例如: lowres, bad anatomy, bad hands..."></textarea>
+                    </div>
+                </div>
+                
+                <!-- 右侧：统计面板与动作操作栏 -->
+                <aside class="composer-sidebar-panel">
+                    <div class="composer-stats-card">
+                        <h4>STATISTICS</h4>
+                        <div class="composer-stat-item">
+                            <span>字符数</span>
+                            <strong id="composer-char-count">0</strong>
+                        </div>
+                        <div class="composer-stat-item">
+                            <span>估算 Token</span>
+                            <strong id="composer-token-count">0</strong>
+                        </div>
+                    </div>
+                    
+                    <div class="composer-actions">
+                        <button id="composer-btn-apply" class="btn-primary-block">应用并返回</button>
+                        <button id="composer-btn-generate" class="btn-outline-block">保存并生成</button>
+                        <button id="composer-btn-cancel" class="btn-outline-block btn-cancel">放弃修改</button>
+                    </div>
+                    
+                    <div class="composer-tips">
+                        <p>编辑状态下按 <strong>Ctrl + Enter</strong> 快速应用修改并直接向服务器发起生图任务。</p>
+                    </div>
+                </aside>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

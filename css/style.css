@@ -3723,3 +3723,237 @@ body::after {
     opacity: 0.7;
     transform: scale(0.98);
 }
+/* ==========================================================================
+   沉浸式编辑器 (STUDIO COMPOSER) 杂志风毛玻璃样式
+   ========================================================================== */
+.composer-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1100; /* 高于侧边栏与弹窗 */
+    background: rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(25px);
+    -webkit-backdrop-filter: blur(25px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+[data-theme="dark"] .composer-modal-backdrop {
+    background: rgba(0, 0, 0, 0.75);
+}
+
+.composer-modal-backdrop.active {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+.composer-modal-content {
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    width: 90%;
+    max-width: 960px;
+    max-height: 85vh;
+    padding: 2.5rem;
+    box-shadow: var(--shadow-lg);
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    transform: translateY(20px);
+    transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.composer-modal-backdrop.active .composer-modal-content {
+    transform: translateY(0);
+}
+
+.composer-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    border-bottom: 1px solid var(--glass-border);
+    padding-bottom: 1rem;
+}
+
+.composer-modal-header h3 {
+    font-family: var(--font-serif);
+    font-size: 1.3rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+}
+
+.btn-close-composer {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: color 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.2rem;
+}
+
+.btn-close-composer:hover {
+    color: var(--text-primary);
+}
+
+.composer-modal-body {
+    display: flex;
+    gap: 2.5rem;
+    overflow-y: auto;
+}
+
+/* 输入域排版 */
+.composer-fields {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.composer-field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.composer-field-group label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+}
+
+.composer-field-group textarea {
+    background: var(--bg-diffuse-1);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    font-family: var(--font-sans);
+    font-size: 0.95rem;
+    line-height: 1.5;
+    color: var(--text-primary);
+    outline: none;
+    resize: vertical;
+    transition: all 0.25s ease;
+}
+
+.composer-field-group textarea:focus {
+    border-color: var(--text-secondary);
+    background: var(--glass-bg);
+    box-shadow: var(--shadow-sm);
+}
+
+/* 右侧统计与按钮侧栏 */
+.composer-sidebar-panel {
+    width: 260px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.composer-stats-card {
+    background: var(--bg-diffuse-1);
+    border: 1px solid var(--glass-border);
+    border-radius: 8px;
+    padding: 1.25rem;
+}
+
+.composer-stats-card h4 {
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--glass-border);
+    padding-bottom: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.composer-stat-item {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+}
+
+.composer-stat-item strong {
+    font-family: monospace;
+    color: var(--text-primary);
+}
+
+/* 按钮组 */
+.composer-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.btn-primary-block {
+    background: var(--text-primary);
+    color: var(--bg-base);
+    border: 1px solid var(--text-primary);
+    padding: 0.8rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-primary-block:hover {
+    opacity: 0.9;
+    transform: translateY(-1px);
+}
+
+.btn-outline-block {
+    background: transparent;
+    border: 1px solid var(--glass-border);
+    color: var(--text-primary);
+    padding: 0.8rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.btn-outline-block:hover {
+    background: var(--bg-diffuse-1);
+    border-color: var(--text-secondary);
+    transform: translateY(-1px);
+}
+
+.btn-outline-block.btn-cancel {
+    color: var(--text-muted);
+}
+
+.btn-outline-block.btn-cancel:hover {
+    color: var(--text-primary);
+}
+
+.composer-tips {
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--text-muted);
+}
+
+/* 移动端适配 */
+@media (max-width: 768px) {
+    .composer-modal-content {
+        padding: 1.5rem;
+        max-height: 95vh;
+    }
+    .composer-modal-body {
+        flex-direction: column;
+        gap: 1.25rem;
+    }
+    .composer-sidebar-panel {
+        width: 100%;
+    }
+}
