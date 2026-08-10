@@ -208,13 +208,15 @@
                         <!-- 尺寸比例 (保留显示) -->
                         <div class="setting-item" style="margin-top: 1rem;">
                             <label>尺寸比例预设</label>
-                            <div class="ratio-preset-group" id="ratio-preset-group">
-                                <button class="btn-outline btn-mini active" data-ratio="832x1216">竖图 (3:4)</button>
-                                <button class="btn-outline btn-mini" data-ratio="1216x832">横图 (4:3)</button>
-                                <button class="btn-outline btn-mini" data-ratio="1024x1024">正方形 (1:1)</button>
-                                <button class="btn-outline btn-mini" data-ratio="512x768">精细竖图 (2:3)</button>
-                                <button class="btn-outline btn-mini" data-custom="true">自定义</button>
-                            </div>
+                           <div class="ratio-preset-group" id="ratio-preset-group">
+    <button class="btn-outline btn-mini active" data-ratio="832x1216">竖图 (3:4)</button>
+    <button class="btn-outline btn-mini" data-ratio="1216x832">横图 (4:3)</button>
+    <button class="btn-outline btn-mini" data-ratio="832x1472">手机立绘 (9:16)</button>
+    <button class="btn-outline btn-mini" data-ratio="1472x832">电脑壁纸 (16:9)</button>
+    <button class="btn-outline btn-mini" data-ratio="1024x1024">正方形 (1:1)</button>
+    <button class="btn-outline btn-mini" data-ratio="512x768">常规 (2:3)</button>
+    <button class="btn-outline btn-mini" data-custom="true">自定义</button>
+</div>
                             <div class="custom-dimension-inputs" id="custom-dimension-inputs" style="display: none; grid-template-columns: 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem;">
                                 <input type="number" id="param-custom-w" class="editor-input" placeholder="宽 (W)" value="832">
                                 <input type="number" id="param-custom-h" class="editor-input" placeholder="高 (H)" value="1216">
