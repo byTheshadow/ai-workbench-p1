@@ -1450,11 +1450,10 @@ window.StudioManager = {
         }
     },
 
-    // 自动挂载悬浮监控胶囊与侧边抽屉骨架 (完美适配美化 CSS)
-    initQueueMonitorDOM() {
+     initQueueMonitorDOM() {
         const self = this;
         
-        // 1. 创建队列监控胶囊 (Capsule)
+        // 只创建队列监控胶囊 (Capsule)，不创建抽屉
         let capsule = document.querySelector('.queue-monitor-capsule');
         if (!capsule) {
             capsule = document.createElement('div');
@@ -1469,57 +1468,31 @@ window.StudioManager = {
             `;
             document.body.appendChild(capsule);
             
-            // 点击胶囊唤起侧边栏抽屉
+            // 使用已有的 showSystemError 弹窗显示统计数据
             capsule.addEventListener('click', () => {
-                const drawer = document.querySelector('.queue-monitor-drawer');
-                if (drawer) drawer.classList.toggle('active');
+                const active = (generatorQueue.active || []).length;
+                const queue = (generatorQueue.queue || []).length;
+                const completed = (generatorQueue.completed || []).length;
+                const failed = (generatorQueue.failed || []).length;
+                
+                const msg = `正在生成: ${active}\n排队中: ${queue}\n已完成: ${completed}\n失败: ${failed}`;
+                
+                self.showSystemError('队列状态', msg);
             });
         }
         self.queueCapsule = capsule;
-
-        // 2. 创建侧边抽屉 (Drawer)
-        let drawer = document.querySelector('.queue-monitor-drawer');
-        if (!drawer) {
-            drawer = document.createElement('div');
-            drawer.className = 'queue-monitor-drawer';
-            drawer.innerHTML = `
-                <div class="queue-drawer-header">
-                    <h3>QUEUE MONITOR</h3>
-                    <button class="btn-cancel-task" id="btn-close-queue-drawer" style="font-size: 1.25rem;">&times;</button>
-                </div>
-                <div class="queue-drawer-list" id="queue-monitor-body">
-                    <div class="queue-empty-text">当前无正在执行的任务</div>
-                </div>
-                <div class="queue-footer" style="padding: 1.5rem; border-top: 1px solid var(--glass-border); display: flex; gap: 0.5rem;">
-                    <button class="batch-buttons-group btn-danger" id="btn-queue-cancel-all" style="flex-grow: 1; padding: 0.5rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; text-align: center; border: none;">TERMINATE ALL</button>
-                    <button class="filter-tab-item active" id="btn-queue-clear-history" style="flex-grow: 1; padding: 0.5rem; border-radius: 4px; font-size: 0.75rem; cursor: pointer; border: 1px solid var(--glass-border);">CLEAR HISTORY</button>
-                </div>
-            `;
-            document.body.appendChild(drawer);
-
-            // 关闭抽屉事件
-            drawer.querySelector('#btn-close-queue-drawer').addEventListener('click', () => {
-                drawer.classList.remove('active');
-            });
-
-            drawer.querySelector('#btn-queue-cancel-all').addEventListener('click', (e) => {
-                e.stopPropagation();
-                generatorQueue.cancelAll();
-                self.showNotification('已强行终止所有排队与生成任务');
-            });
-
-            drawer.querySelector('#btn-queue-clear-history').addEventListener('click', (e) => {
-                e.stopPropagation();
-                generatorQueue.clearHistory();
-            });
+        
+        // 移除旧抽屉相关 DOM
+        const oldDrawer = document.querySelector('.queue-monitor-drawer');
+        if (oldDrawer) {
+            oldDrawer.remove();
         }
-        self.queueDrawer = drawer;
+        self.queueDrawer = null;
     },
 
-    // 渲染悬浮队列监视器与抽屉内容
     renderQueueMonitor(state) {
         const self = this;
-        if (!self.queueCapsule || !self.queueDrawer) return;
+        if (!self.queueCapsule) return;
 
         const totalActive = (state.active || []).length + (state.queue || []).length;
         const countCapsuleBadge = document.getElementById('queue-capsule-count');
@@ -1527,84 +1500,16 @@ window.StudioManager = {
         
         if (countCapsuleBadge) countCapsuleBadge.textContent = totalActive;
         
-        // 呼吸灯闪烁控制与自动展开
+        // 呼吸灯闪烁控制
         if (totalActive > 0) {
             if (glowDot) glowDot.style.animation = 'breathingGlow 1.5s infinite ease-in-out';
-            self.queueDrawer.classList.add('active'); // 有新任务自动唤起侧边抽屉
         } else {
             if (glowDot) glowDot.style.animation = 'none';
         }
-
-        const container = document.getElementById('queue-monitor-body');
-        if (container) {
-            container.innerHTML = '';
-            
-            const allHistory = [
-                ...(state.active || []).map(t => ({ ...t, status: 'generating' })),
-                ...(state.queue || []).map((t, idx) => ({ ...t, status: 'waiting', index: idx + 1 })),
-                ...(state.completed || []),
-                ...(state.failed || [])
-            ];
-
-            if (allHistory.length === 0) {
-                container.innerHTML = '<div class="queue-empty-text">当前无正在执行的任务</div>';
-                return;
-            }
-
-            allHistory.forEach(item => {
-                const card = document.createElement('div');
-                card.className = 'queue-task-item';
-                
-                let statusLabel = (item.status || '').toUpperCase();
-                let statusClass = item.status;
-                let excerpt = item.prompt || '正在载入参数...';
-
-                // 生成状态与进度控制逻辑
-                let progressHtml = '';
-                if (item.status === 'generating') {
-                    progressHtml = `
-                        <div class="task-progress-track">
-                            <div class="task-progress-bar" style="width: 60%; background: #4dadf7; animation: pulse-status 1.2s infinite ease-in-out; height: 100%;"></div>
-                        </div>
-                    `;
-                }
-
-                card.innerHTML = `
-                    <div class="queue-task-meta">
-                        <span class="task-backend-badge">${(item.backend || 'API').toUpperCase()}</span>
-                        <span class="task-status-text ${statusClass}">${statusLabel} ${item.index ? '#' + item.index : ''}</span>
-                    </div>
-                    <div class="task-prompt-excerpt">${excerpt}</div>
-                    ${progressHtml}
-                    ${(item.status === 'generating' || item.status === 'waiting') ? `<button class="btn-cancel-task" data-id="${item.id}">CANCEL</button>` : ''}
-                `;
-
-                // 绑定单个取消事件
-                const cancelBtn = card.querySelector('.btn-cancel-task');
-                if (cancelBtn) {
-                    cancelBtn.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        generatorQueue.cancel(item.id);
-                    });
-                }
-
-                // 点击已完成的卡片大图预览
-                if (item.status === 'completed' && item.record) {
-                    card.style.cursor = 'pointer';
-                    card.addEventListener('click', () => {
-                        self.openLightbox(item.record);
-                    });
-                } else if (item.status === 'failed') {
-                    card.style.cursor = 'pointer';
-                    card.addEventListener('click', () => {
-                        self.showSystemError('生图任务失败', item.error || '请求异常');
-                    });
-                }
-
-                container.appendChild(card);
-            });
-        }
+        
+        // 不再渲染抽屉内容
     },
+
 
     // ==========================================================================
     // 5. 画师实验室交互 (Artist Lab Core)

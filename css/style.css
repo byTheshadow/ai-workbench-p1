@@ -2873,78 +2873,6 @@ body::after {
     100% { transform: rotate(180deg); }
 }
 
-/* 悬浮侧边抽屉 */
-.queue-monitor-drawer {
-    position: fixed;
-    top: 0;
-    right: -360px; /* 初始隐藏 */
-    width: 340px;
-    height: 100vh;
-    background: var(--glass-bg);
-    backdrop-filter: blur(var(--blur));
-    -webkit-backdrop-filter: blur(var(--blur));
-    border-left: 1px solid var(--glass-border);
-    z-index: 130;
-    display: flex;
-    flex-direction: column;
-    box-shadow: var(--shadow-lg);
-    transition: right 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.queue-monitor-drawer.active {
-    right: 0;
-}
-
-.queue-drawer-header {
-    padding: 2rem 1.5rem 1rem;
-    border-bottom: 1px solid var(--glass-border);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
-.queue-drawer-header h3 {
-    font-family: var(--font-serif);
-    font-size: 1rem;
-    letter-spacing: 0.1em;
-    font-weight: 400;
-}
-
-.queue-drawer-list {
-    flex-grow: 1;
-    overflow-y: auto;
-    padding: 1.5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-}
-
-.queue-empty-text {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    text-align: center;
-    margin-top: 2rem;
-}
-
-/* 队列单个任务项目 */
-.queue-task-item {
-    background: var(--bg-diffuse-1);
-    border: 1px solid var(--glass-border);
-    border-radius: 6px;
-    padding: 0.75rem 1rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    position: relative;
-    overflow: hidden;
-}
-
-.queue-task-meta {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-
 .task-backend-badge {
     font-size: 0.65rem;
     text-transform: uppercase;
@@ -3440,286 +3368,89 @@ body::after {
     50% { opacity: 1; }
     100% { opacity: 0.5; }
 }
-/* ==========================================================================
-   FLOATING QUEUE MONITOR (杂志画册极简悬浮窗 - 严格无 EMOJI 规范)
-   ========================================================================== */
-.floating-queue-panel {
-    position: fixed;
-    right: 2rem;
+
+/* 队列监控胶囊 - 最终版本 */
+.queue-monitor-capsule {
+    position: fixed !important;
     bottom: 2rem;
-    width: 320px;
-    background: rgba(18, 18, 18, 0.85);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 4px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
-    z-index: 9999;
-    font-family: 'Inter', sans-serif;
-    color: #f0f0f0;
-    transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-    overflow: hidden;
-}
-
-[data-theme="light"] .floating-queue-panel {
-    background: rgba(255, 255, 255, 0.9);
-    border-color: rgba(0, 0, 0, 0.12);
-    color: #111111;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1);
-}
-
-.floating-queue-panel.collapsed .queue-body {
-    display: none;
-}
-
-.floating-queue-panel.collapsed {
-    width: 220px;
-}
-
-.queue-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.75rem 1rem;
-    background: rgba(255, 255, 255, 0.03);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-    cursor: pointer;
-    user-select: none;
-}
-
-[data-theme="light"] .queue-header {
-    background: rgba(0, 0, 0, 0.02);
-    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-.queue-title-wrap {
-    display: flex;
+    right: 2rem;
+    background: var(--text-primary);
+    color: var(--bg-base);
+    border: 1px solid var(--text-primary);
+    border-radius: 50px;
+    padding: 0.5rem 1.2rem;
+    display: flex !important;
     align-items: center;
     gap: 0.5rem;
+    z-index: 2147483000 !important;
+    cursor: default;
+    box-shadow: var(--shadow-lg);
+    font-size: 0.75rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    transition: all 0.3s ease;
+    
+    visibility: visible !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: translateZ(0);
+    isolation: isolate;
 }
 
-.queue-indicator-dot {
+.queue-monitor-capsule:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.queue-status-glow {
     width: 6px;
     height: 6px;
+    background: #40c057;
     border-radius: 50%;
-    background: #666;
-}
-
-.queue-indicator-dot.active-pulse {
-    background: #ffffff;
-    box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
-    animation: queuePulse 1.5s infinite ease-in-out;
-}
-
-[data-theme="light"] .queue-indicator-dot.active-pulse {
-    background: #000000;
-    box-shadow: 0 0 8px rgba(0, 0, 0, 0.4);
-}
-
-@keyframes queuePulse {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.4; transform: scale(1.2); }
-}
-
-.queue-title {
-    font-family: 'Cinzel', serif;
-    font-size: 0.75rem;
-    letter-spacing: 0.1em;
-    font-weight: 600;
-}
-
-.queue-badge-count {
-    font-size: 0.65rem;
-    padding: 0.1rem 0.4rem;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 2px;
-}
-
-[data-theme="light"] .queue-badge-count {
-    background: rgba(0, 0, 0, 0.08);
-}
-
-.btn-queue-icon {
-    background: transparent;
-    border: none;
-    color: inherit;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    padding: 0.2rem;
-    opacity: 0.6;
-    transition: opacity 0.2s;
-}
-
-.btn-queue-icon:hover {
-    opacity: 1;
-}
-
-.floating-queue-panel.collapsed #btn-toggle-queue-collapse svg {
-    transform: rotate(180deg);
-}
-
-.queue-body {
-    max-height: 380px;
-    overflow-y: auto;
-    padding: 0.5rem 0.75rem;
-}
-
-.queue-section {
-    margin-bottom: 0.75rem;
-}
-
-.queue-section-title {
-    font-size: 0.65rem;
-    letter-spacing: 0.08em;
-    color: #888;
-    margin-bottom: 0.4rem;
-    padding-left: 0.25rem;
-}
-
-.queue-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-}
-
-.queue-empty-text {
-    font-size: 0.7rem;
-    color: #666;
-    padding: 0.4rem;
-    text-align: center;
-}
-
-.queue-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0.4rem 0.6rem;
-    background: rgba(255, 255, 255, 0.03);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 2px;
-    font-size: 0.75rem;
-    transition: background 0.2s;
-}
-
-[data-theme="light"] .queue-item {
-    background: rgba(0, 0, 0, 0.02);
-    border-color: rgba(0, 0, 0, 0.05);
-}
-
-.queue-item:hover {
-    background: rgba(255, 255, 255, 0.07);
-}
-
-[data-theme="light"] .queue-item:hover {
-    background: rgba(0, 0, 0, 0.05);
-}
-
-.queue-item-info {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    overflow: hidden;
-}
-
-.queue-item-thumb {
-    width: 24px;
-    height: 24px;
-    border-radius: 2px;
-    overflow: hidden;
     flex-shrink: 0;
 }
 
-.queue-item-thumb img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
+.queue-sandglass-icon {
+    flex-shrink: 0;
 }
 
-.queue-item-name {
-    font-weight: 500;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 120px;
-}
-
-.queue-item-meta {
-    font-size: 0.65rem;
-    color: #888;
-}
-
-.queue-order-badge {
-    font-size: 0.65rem;
-    color: #aaa;
+#queue-capsule-count {
     font-family: monospace;
+    font-weight: 700;
+    min-width: 1.2em;
+    text-align: center;
 }
 
-.queue-status-tag.error {
-    font-size: 0.6rem;
-    color: #ff5555;
-    border: 1px solid rgba(255, 85, 85, 0.3);
-    padding: 0.05rem 0.25rem;
-    border-radius: 2px;
+/* 呼吸灯动画 */
+@keyframes breathingGlow {
+    0% { 
+        opacity: 0.3; 
+        transform: scale(0.9); 
+        box-shadow: 0 0 0 0 rgba(64, 192, 87, 0.4); 
+    }
+    50% { 
+        opacity: 1; 
+        transform: scale(1.1); 
+        box-shadow: 0 0 6px 2px rgba(64, 192, 87, 0.7); 
+    }
+    100% { 
+        opacity: 0.3; 
+        transform: scale(0.9); 
+        box-shadow: 0 0 0 0 rgba(64, 192, 87, 0.4); 
+    }
 }
 
-.queue-item-error {
-    font-size: 0.65rem;
-    color: #ff7777;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 130px;
-    display: block;
+@keyframes sandglassRotate {
+    0%, 90% { transform: rotate(0deg); }
+    100% { transform: rotate(180deg); }
 }
 
-.btn-task-cancel {
-    background: transparent;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    color: inherit;
-    font-size: 0.6rem;
-    padding: 0.15rem 0.4rem;
-    border-radius: 2px;
-    cursor: pointer;
-    transition: all 0.2s;
-}
-
-.btn-task-cancel:hover {
-    background: #ff4444;
-    border-color: #ff4444;
-    color: #ffffff;
-}
-
-.queue-footer {
-    display: flex;
-    justify-content: space-between;
-    padding-top: 0.5rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-[data-theme="light"] .queue-footer {
-    border-top: 1px solid rgba(0, 0, 0, 0.08);
-}
-
-.btn-queue-action {
-    background: transparent;
-    border: none;
-    color: #888;
-    font-size: 0.65rem;
-    letter-spacing: 0.05em;
-    cursor: pointer;
-    padding: 0.2rem 0.4rem;
-}
-
-.btn-queue-action:hover {
-    color: #ffffff;
-}
-
-[data-theme="light"] .btn-queue-action:hover {
-    color: #000000;
-}
-
-.btn-clicked-feedback {
-    opacity: 0.7;
-    transform: scale(0.98);
+/* 移动端适配 */
+@media (max-width: 600px) {
+    .queue-monitor-capsule {
+        right: 1rem;
+        bottom: 1rem;
+        padding: 0.4rem 1rem;
+        font-size: 0.7rem;
+    }
 }
