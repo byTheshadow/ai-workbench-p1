@@ -198,13 +198,14 @@ class QueueScheduler {
                 finalSeed = Math.floor(Math.random() * 9999999999);
             }
 
+            // 使用全新经过防跨域、去前缀、多后端兼容的完美发送逻辑
             if (task.backend === 'novelai') {
                 const naiUrl = apiConfig.naiUrl || 'https://api.novelai.net';
                 const endpoint = `${naiUrl.replace(/\/$/, '')}/ai/generate-image`;
 
                 const payload = {
                     input: task.prompt,
-                    model: task.params.model || 'nai-diffusion-4-5-full',
+                    model: task.params.model || 'nai-diffusion-3',
                     action: 'generate',
                     parameters: {
                         width: task.params.width,
@@ -214,10 +215,6 @@ class QueueScheduler {
                         steps: task.params.steps,
                         seed: finalSeed,
                         n_samples: 1,
-                        ucPreset: 0,
-                        qualityToggle: true,
-                        dynamic_thresholding: false,
-                        controlnet_strength: 1,
                         legacy: false,
                         add_original_image: true,
                         uncond_scale: 1,
@@ -234,10 +231,23 @@ class QueueScheduler {
                     }
                 }
 
+                // 修复 NovelAI Vibe Transfer 参考图片发送逻辑（使用最新官方数组格式并进行去前缀处理）
                 if (task.params.vibeBase64) {
-                    payload.parameters.reference_image = task.params.vibeBase64;
-                    payload.parameters.reference_strength = task.params.vibeStrength || 0.6;
-                    payload.parameters.reference_information_extracted_multiple = 1.0;
+                    const cleanB64 = task.params.vibeBase64.includes('base64,')
+                        ? task.params.vibeBase64.split('base64,')[1]
+                        : task.params.vibeBase64;
+
+                    payload.parameters.reference_images = [
+                        {
+                            image: cleanB64,
+                            strength: task.params.vibeStrength || 0.6,
+                            information_extracted: 1.0
+                        }
+                    ];
+                    // 冗余旧字段以达成向后最大兼容性
+                    payload.parameters.reference_image_multiple = [cleanB64];
+                    payload.parameters.reference_strength_multiple = [task.params.vibeStrength || 0.6];
+                    payload.parameters.reference_information_extracted_multiple = [1.0];
                 }
 
                 const headers = { 'Content-Type': 'application/json' };
@@ -270,7 +280,12 @@ class QueueScheduler {
 
             } else if (task.backend === 'sd') {
                 const sdUrl = apiConfig.sdUrl || 'http://127.0.0.1:7860';
-                const endpoint = `${sdUrl.replace(/\/$/, '')}/sdapi/v1/txt2img`;
+                
+                // 修复 SD 图生图发送：根据是否有参考图动态决定调用端点
+                const hasVibe = !!task.params.vibeBase64;
+                const endpoint = hasVibe
+                    ? `${sdUrl.replace(/\/$/, '')}/sdapi/v1/img2img`
+                    : `${sdUrl.replace(/\/$/, '')}/sdapi/v1/txt2img`;
 
                 const payload = {
                     prompt: task.prompt,
@@ -282,6 +297,16 @@ class QueueScheduler {
                     seed: finalSeed,
                     sampler_name: task.params.sampler || 'Euler a'
                 };
+
+                if (hasVibe) {
+                    const cleanB64 = task.params.vibeBase64.includes('base64,')
+                        ? task.params.vibeBase64.split('base64,')[1]
+                        : task.params.vibeBase64;
+
+                    payload.init_images = [cleanB64];
+                    // 强度换算：SD 里的 denoising_strength 为重绘幅度，其意义与 reference_strength 相反
+                    payload.denoising_strength = Math.max(0, Math.min(1, 1 - (task.params.vibeStrength || 0.6)));
+                }
 
                 const headers = { 'Content-Type': 'application/json' };
                 if (apiConfig.sdAuth) {
@@ -333,13 +358,20 @@ class QueueScheduler {
 
                 const endpoint = v1Base.replace(/\/$/, '') + '/images/generations';
 
-                // 严格遵循豌豆 / XHUB 官方规范，只传递标准 4 大参数
+                // 严格遵循豌豆 / XHUB 官方规范构建基础参数
                 const payload = {
                     model: task.params.model || 'dall-e-3',
                     prompt: task.prompt,
                     n: 1,
                     size: `${task.params.width}x${task.params.height}`
                 };
+
+                // 修复通用 API 引擎参考图发送：携带参考图片 Base64 编码，实现第三方中转站的图生图/Vibe功能
+                if (task.params.vibeBase64) {
+                    payload.image = task.params.vibeBase64;
+                    payload.init_image = task.params.vibeBase64;
+                    payload.image_strength = task.params.vibeStrength || 0.6;
+                }
 
                 const headers = { 'Content-Type': 'application/json' };
                 if (apiConfig.imageV1Key) {
@@ -900,7 +932,7 @@ window.StudioManager = {
         });
 
         self.btnBatchSelectAll.addEventListener('click', () => {
-            const cards = self.galleryGrid.querySelectorAll('.gallery-item-card');
+            const cards = self.galleryGrid.querySelectorAll('.gallery-card');
             if (self.selectedImageIds.length === cards.length) {
                 cards.forEach(card => card.classList.remove('selected'));
                 self.selectedImageIds = [];
@@ -936,6 +968,8 @@ window.StudioManager = {
         self.btnGenerate.addEventListener('click', () => {
             self.triggerGenerateAction();
         });
+
+        self.btnGenerate.disabled = false;
 
         self.btnInterrupt.addEventListener('click', () => {
             const activeTasks = [...generatorQueue.active];
@@ -1133,7 +1167,7 @@ window.StudioManager = {
         const self = this;
         self.batchBar.style.display = 'none';
         self.btnToggleBatch.textContent = '批量管理';
-        const cards = self.galleryGrid.querySelectorAll('.gallery-item-card');
+        const cards = self.galleryGrid.querySelectorAll('.gallery-card');
         cards.forEach(card => card.classList.remove('selected'));
         self.selectedImageIds = [];
         self.batchSelectedCount.textContent = '0';
@@ -1150,7 +1184,7 @@ window.StudioManager = {
         if (document.activeElement === self.rangeScale) {
             self.valScaleNum.value = parseFloat(self.rangeScale.value).toFixed(1);
         } else if (document.activeElement === self.valScaleNum) {
-            self.rangeScale.value = self.valScaleNum.value;
+            self.rangeSteps.value = self.valScaleNum.value;
         }
         if (document.activeElement === self.vibeStrength) {
             self.vibeStrengthNum.value = parseFloat(self.vibeStrength.value).toFixed(2);
@@ -1944,9 +1978,9 @@ window.StudioManager = {
             return;
         }
 
-                items.forEach(item => {
+        items.forEach(item => {
             const card = document.createElement('div');
-            card.className = `gallery-item-card ${self.selectedImageIds.includes(item.id) ? 'selected' : ''}`;
+            card.className = `gallery-card ${self.selectedImageIds.includes(item.id) ? 'selected' : ''}`;
             card.dataset.id = item.id;
 
             const imgWrapper = document.createElement('div');
@@ -1968,18 +2002,18 @@ window.StudioManager = {
             imgWrapper.appendChild(img);
 
             const overlay = document.createElement('div');
-            overlay.className = 'gallery-hover-overlay';
+            overlay.className = 'gallery-overlay';
 
             const overlayContent = document.createElement('div');
             overlayContent.className = 'gallery-overlay-content';
 
             const infoPrompt = document.createElement('p');
-            infoPrompt.className = 'gallery-prompt-snippet';
+            infoPrompt.className = 'overlay-prompt';
             infoPrompt.textContent = item.prompt;
             infoPrompt.title = item.prompt;
 
             const infoMeta = document.createElement('div');
-            infoMeta.className = 'gallery-meta-snippet';
+            infoMeta.className = 'overlay-meta';
             infoMeta.innerHTML = `
                 <span>${item.backend.toUpperCase()}</span>
                 <span>${item.params.width}x${item.params.height}</span>
@@ -1990,16 +2024,14 @@ window.StudioManager = {
             overlayContent.appendChild(infoMeta);
 
             const actionContainer = document.createElement('div');
-            actionContainer.className = 'gallery-card-actions';
+            actionContainer.className = 'overlay-actions';
 
             const btnSend = document.createElement('button');
-            btnSend.className = 'gallery-card-btn';
             btnSend.title = '回填参数至工作台';
             btnSend.innerHTML = `
-                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
                 </svg>
-                <span>复用</span>
             `;
             btnSend.onclick = (e) => {
                 e.stopPropagation();
@@ -2007,13 +2039,12 @@ window.StudioManager = {
             };
 
             const btnDetail = document.createElement('button');
-            btnDetail.className = 'gallery-card-btn';
             btnDetail.title = '查看完整大图参数';
             btnDetail.innerHTML = `
-                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+                    <line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line>
                 </svg>
-                <span>查看</span>
             `;
             btnDetail.onclick = (e) => {
                 e.stopPropagation();
@@ -2046,7 +2077,6 @@ window.StudioManager = {
 
             self.galleryGrid.appendChild(card);
         });
-
     },
 
     // 开启大图 Lightbox 弹窗
