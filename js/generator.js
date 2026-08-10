@@ -474,7 +474,6 @@ class QueueScheduler {
 }
 
 const generatorQueue = new QueueScheduler(5);
-
 // ==========================================================================
 // 3. 生图工作室主控管理对象 (StudioManager)
 // ==========================================================================
@@ -653,22 +652,6 @@ window.StudioManager = {
     // ==========================================================================
     async init() {
         const self = this;
-
-        // 绑定沉浸式编辑器 DOM 节点
-        self.composerModal = document.getElementById('studio-composer-modal');
-        self.btnOpenComposer = document.getElementById('btn-open-composer');
-        self.btnCloseComposer = document.getElementById('btn-close-composer');
-        
-        self.composerSubject = document.getElementById('composer-subject');
-        self.composerPrompt = document.getElementById('composer-prompt');
-        self.composerNegative = document.getElementById('composer-negative');
-        
-        self.composerCharCount = document.getElementById('composer-char-count');
-        self.composerTokenCount = document.getElementById('composer-token-count');
-        
-        self.composerBtnApply = document.getElementById('composer-btn-apply');
-        self.composerBtnGenerate = document.getElementById('composer-btn-generate');
-        self.composerBtnCancel = document.getElementById('composer-btn-cancel');
         
         self.btnGenerate = document.getElementById('btn-studio-generate');
         self.btnInterrupt = document.getElementById('btn-studio-interrupt');
@@ -950,73 +933,6 @@ window.StudioManager = {
             }
         });
 
-        // 绑定打开沉浸式编辑器事件
-        if (self.btnOpenComposer) {
-            self.btnOpenComposer.addEventListener('click', () => {
-                self.openComposerModal();
-            });
-        }
-
-        // 绑定关闭编辑器（各种放弃和取消操作）
-        const closeComposerFn = () => {
-            if (self.composerModal) self.composerModal.classList.remove('active');
-        };
-        
-        if (self.btnCloseComposer) self.btnCloseComposer.addEventListener('click', closeComposerFn);
-        if (self.composerBtnCancel) self.composerBtnCancel.addEventListener('click', closeComposerFn);
-        
-        // 确认应用逻辑
-        if (self.composerBtnApply) {
-            self.composerBtnApply.addEventListener('click', () => {
-                self.applyComposerData();
-                closeComposerFn();
-            });
-        }
-        
-        // 保存并生图逻辑
-        if (self.composerBtnGenerate) {
-            self.composerBtnGenerate.addEventListener('click', () => {
-                self.applyComposerData();
-                closeComposerFn();
-                self.triggerGenerateAction();
-            });
-        }
-
-        // 弹窗内的实时输入监控，用于统计字数和估算 Token
-        const updateStatsFn = () => {
-            const sText = self.composerSubject.value || '';
-            const pText = self.composerPrompt.value || '';
-            const nText = self.composerNegative.value || '';
-            
-            const totalChars = sText.length + pText.length + nText.length;
-            self.composerCharCount.textContent = totalChars;
-            
-            // 极简 Token 估算：按空格/逗号分割并以 1.2 放大系数拟合
-            const cleanText = `${sText} ${pText}`.trim();
-            const words = cleanText.split(/[\s,，.。;；]+/).filter(Boolean);
-            const estTokens = Math.ceil(words.length * 1.25);
-            self.composerTokenCount.textContent = estTokens;
-        };
-
-        if (self.composerSubject) self.composerSubject.addEventListener('input', updateStatsFn);
-        if (self.composerPrompt) self.composerPrompt.addEventListener('input', updateStatsFn);
-        if (self.composerNegative) self.composerNegative.addEventListener('input', updateStatsFn);
-
-        // 键盘监听（Esc 关闭，Ctrl + Enter 发起生成）
-        document.addEventListener('keydown', (e) => {
-            if (self.composerModal && self.composerModal.classList.contains('active')) {
-                if (e.key === 'Escape') {
-                    closeComposerFn();
-                }
-                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-                    e.preventDefault();
-                    self.applyComposerData();
-                    closeComposerFn();
-                    self.triggerGenerateAction();
-                }
-            }
-        });
-
         document.addEventListener('keydown', (e) => {
             if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
                 if (!self.btnGenerate.disabled) {
@@ -1116,40 +1032,207 @@ window.StudioManager = {
             btn.addEventListener('click', () => {
                 buttons.forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
-                
-                const w = btn.dataset.w;
-                const h = btn.dataset.h;
-                
-                if (w === 'custom') {
-                    customDiv.style.display = 'grid';
-                } else {
+
+                const ratio = btn.dataset.ratio;
+                if (ratio) {
                     customDiv.style.display = 'none';
+                    const [w, h] = ratio.split('x');
                     self.inputWidth.value = w;
                     self.inputHeight.value = h;
-                    self.saveUIToActiveDraft();
+                } else if (btn.dataset.custom) {
+                    customDiv.style.display = 'grid';
                 }
+                self.saveUIToActiveDraft();
             });
         });
     },
 
     toggleParametersVisibility(backend) {
         const self = this;
-        if (!self.naiParamsPanel) return;
-
         if (backend === 'novelai') {
+            self.advancedControls.style.display = 'block';
             self.naiParamsPanel.style.display = 'block';
-            if (self.advancedControls) self.advancedControls.style.display = 'block';
-        } else {
+            self.artistLabContainer.style.display = 'block';
+            document.getElementById('studio-negative-section').style.display = 'block';
+            document.getElementById('studio-sampler-wrapper').style.display = 'block';
+            
+            self.samplerSelect.innerHTML = `
+                <option value="k_euler">Euler (标准快速)</option>
+                <option value="k_euler_ancestral">Euler Ancestral (柔和插值)</option>
+                <option value="k_dpmpp_2m">DPM++ 2M (解析质感)</option>
+                <option value="k_dpmpp_sde">DPM++ SDE (多细节细节)</option>
+                <option value="ddim">DDIM (复古平滑)</option>
+            `;
+        } else if (backend === 'sd') {
+            self.advancedControls.style.display = 'block';
             self.naiParamsPanel.style.display = 'none';
-            if (self.advancedControls) self.advancedControls.style.display = 'block'; 
+            self.artistLabContainer.style.display = 'block';
+            document.getElementById('studio-negative-section').style.display = 'block';
+            document.getElementById('studio-sampler-wrapper').style.display = 'block';
+            
+            self.samplerSelect.innerHTML = `
+                <option value="k_euler">Euler</option>
+                <option value="k_euler_ancestral">Euler a</option>
+                <option value="k_dpmpp_2m">DPM++ 2M</option>
+                <option value="k_dpmpp_2m_karras">DPM++ 2M Karras</option>
+                <option value="k_dpmpp_sde_karras">DPM++ SDE Karras</option>
+                <option value="ddim">DDIM</option>
+            `;
+        } else if (backend === 'v1') {
+            self.advancedControls.style.display = 'block';
+            self.naiParamsPanel.style.display = 'none';
+            self.artistLabContainer.style.display = 'none';
+            document.getElementById('studio-negative-section').style.display = 'none';
+            document.getElementById('studio-sampler-wrapper').style.display = 'none';
         }
+    },
+
+    handleVibeImageUpload(file) {
+        const self = this;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const base64 = event.target.result;
+            self.vibePreviewImg.src = base64;
+            self.vibePreview.style.display = 'block';
+            self.vibeIntensityWrap.style.display = 'block';
+            self.vibeFileInput.value = '';
+            
+            const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
+            if (activeDraft) {
+                activeDraft.params.vibeBase64 = base64;
+                self.saveDraftsToStorage();
+            }
+        };
+        reader.readAsDataURL(file);
+    },
+
+    exitBatchMode() {
+        const self = this;
+        self.batchBar.style.display = 'none';
+        self.btnToggleBatch.textContent = '批量管理';
+        const cards = self.galleryGrid.querySelectorAll('.gallery-item-card');
+        cards.forEach(card => card.classList.remove('selected'));
+        self.selectedImageIds = [];
+        self.batchSelectedCount.textContent = '0';
     },
 
     syncParameters() {
         const self = this;
-        if (self.valStepsNum && self.rangeSteps) self.valStepsNum.textContent = self.rangeSteps.value;
-        if (self.valScaleNum && self.rangeScale) self.valScaleNum.textContent = parseFloat(self.rangeScale.value).toFixed(1);
-        if (self.vibeStrengthNum && self.vibeStrength) self.vibeStrengthNum.textContent = parseFloat(self.vibeStrength.value).toFixed(1);
+        if (document.activeElement === self.rangeSteps) {
+            self.valStepsNum.value = self.rangeSteps.value;
+        } else if (document.activeElement === self.valStepsNum) {
+            self.rangeSteps.value = self.valStepsNum.value;
+        }
+        if (document.activeElement === self.rangeScale) {
+            self.valScaleNum.value = parseFloat(self.rangeScale.value).toFixed(1);
+        } else if (document.activeElement === self.valScaleNum) {
+            self.rangeScale.value = self.valScaleNum.value;
+        }
+        if (document.activeElement === self.vibeStrength) {
+            self.vibeStrengthNum.value = parseFloat(self.vibeStrength.value).toFixed(2);
+        } else if (document.activeElement === self.vibeStrengthNum) {
+            self.vibeStrength.value = self.vibeStrengthNum.value;
+        }
+
+        if (self.cbSmea && self.cbSmea.checked) {
+            self.smeaDynWrap.style.display = 'block';
+        } else if (self.cbSmea) {
+            self.smeaDynWrap.style.display = 'none';
+        }
+    },
+
+    renderDraftsList() {
+        const self = this;
+        self.draftTabsList.innerHTML = '';
+
+        self.drafts.forEach(draft => {
+            const tab = document.createElement('button');
+            tab.className = `draft-tab-item ${draft.id === self.activeDraftId ? 'active' : ''}`;
+            
+            const span = document.createElement('span');
+            span.textContent = draft.name;
+            span.addEventListener('click', () => {
+                self.activeDraftId = draft.id;
+                self.saveDraftsToStorage();
+                self.renderDraftsList();
+                self.loadActiveDraftToUI();
+                self.fetchModelsFromServer(draft.targetBackend);
+            });
+
+            span.addEventListener('dblclick', () => {
+                const newName = prompt('重命名草稿为：', draft.name);
+                if (newName && newName.trim() !== '') {
+                    draft.name = newName.trim();
+                    self.saveDraftsToStorage();
+                    self.renderDraftsList();
+                }
+            });
+
+            const delBtn = document.createElement('span');
+            delBtn.className = 'tab-close-icon';
+            delBtn.innerHTML = '&times;';
+            delBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (self.drafts.length <= 1) {
+                    alert('请至少保留一个生图草稿。');
+                    return;
+                }
+                if (confirm(`确认永久删除草稿 "${draft.name}" 吗？`)) {
+                    self.drafts = self.drafts.filter(d => d.id !== draft.id);
+                    if (self.activeDraftId === draft.id) {
+                        self.activeDraftId = self.drafts[0].id;
+                    }
+                    self.saveDraftsToStorage();
+                    self.renderDraftsList();
+                    self.loadActiveDraftToUI();
+                    
+                    const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
+                    self.fetchModelsFromServer(activeDraft.targetBackend);
+                }
+            });
+
+            tab.appendChild(span);
+            tab.appendChild(delBtn);
+            self.draftTabsList.appendChild(tab);
+        });
+
+        self.btnAddDraft.onclick = () => {
+            self.createNewDraft();
+        };
+    },
+
+    createNewDraft() {
+        const self = this;
+        const newId = 'draft_' + Date.now();
+        const letter = String.fromCharCode(65 + (self.drafts.length % 26));
+        const newDraft = {
+            id: newId,
+            name: `草稿 ${letter}`,
+            prompt: '',
+            subject: '',
+            negativePrompt: '',
+            targetBackend: 'novelai',
+            artists: [],
+            params: {
+                width: 832,
+                height: 1216,
+                steps: 28,
+                scale: 5.0,
+                sampler: 'k_euler',
+                seed: -1,
+                model: 'nai-diffusion-4-5-full',
+                smea: false,
+                smeaDyn: false,
+                vibeBase64: null,
+                vibeStrength: 0.6
+            }
+        };
+
+        self.saveUIToActiveDraft();
+        self.drafts.push(newDraft);
+        self.activeDraftId = newId;
+        self.loadActiveDraftToUI();
+        self.renderDraftsList();
     },
 
     loadActiveDraftToUI() {
@@ -1160,53 +1243,45 @@ window.StudioManager = {
         self.taPrompt.value = activeDraft.prompt || '';
         self.taSubject.value = activeDraft.subject || '';
         self.taNegativePrompt.value = activeDraft.negativePrompt || '';
-        
+        self.taManualArtists.value = (activeDraft.params && activeDraft.params.manualArtists) ? activeDraft.params.manualArtists : '';
+
         self.engineSelect.value = activeDraft.targetBackend || 'novelai';
-        self.toggleParametersVisibility(activeDraft.targetBackend);
+        self.inputSeed.value = (activeDraft.params && activeDraft.params.seed !== undefined) ? activeDraft.params.seed : -1;
 
         if (activeDraft.params) {
             self.inputWidth.value = activeDraft.params.width || 832;
             self.inputHeight.value = activeDraft.params.height || 1216;
+            
             self.rangeSteps.value = activeDraft.params.steps || 28;
+            self.valStepsNum.value = activeDraft.params.steps || 28;
+            
             self.rangeScale.value = activeDraft.params.scale || 5.0;
-            self.samplerSelect.value = activeDraft.params.sampler || 'k_euler';
-            self.inputSeed.value = activeDraft.params.seed !== undefined ? activeDraft.params.seed : -1;
-            
-            if (self.cbSmea) self.cbSmea.checked = activeDraft.params.smea || false;
-            if (self.cbSmeaDyn) self.cbSmeaDyn.checked = activeDraft.params.smeaDyn || false;
-            if (self.vibeStrength) self.vibeStrength.value = activeDraft.params.vibeStrength || 0.6;
-            
-            self.taManualArtists.value = activeDraft.params.manualArtists || '';
-        }
+            self.valScaleNum.value = activeDraft.params.scale || 5.0;
 
-        // 还原长宽比按钮状态
-        const buttons = document.querySelectorAll('#ratio-preset-group button');
-        const customDiv = document.getElementById('custom-dimension-inputs');
-        let matched = false;
-        buttons.forEach(btn => {
-            btn.classList.remove('active');
-            if (btn.dataset.w === String(self.inputWidth.value) && btn.dataset.h === String(self.inputHeight.value)) {
-                btn.classList.add('active');
-                matched = true;
+            if (self.cbSmea) self.cbSmea.checked = !!activeDraft.params.smea;
+            if (self.cbSmeaDyn) self.cbSmeaDyn.checked = !!activeDraft.params.smeaDyn;
+            if (self.vibeStrength) {
+                self.vibeStrength.value = activeDraft.params.vibeStrength !== undefined ? activeDraft.params.vibeStrength : 0.6;
+                self.vibeStrengthNum.value = self.vibeStrength.value;
             }
-        });
-        if (!matched && buttons.length > 0) {
-            const lastBtn = buttons[buttons.length - 1]; // "自定义" 按钮
-            lastBtn.classList.add('active');
-            if (customDiv) customDiv.style.display = 'grid';
-        } else {
-            if (customDiv) customDiv.style.display = 'none';
         }
 
-        // 还原 Vibe 图像预览
+        self.toggleParametersVisibility(activeDraft.targetBackend);
+
         if (activeDraft.params && activeDraft.params.vibeBase64) {
-            self.vibePreview.style.display = 'block';
             self.vibePreviewImg.src = activeDraft.params.vibeBase64;
-            self.vibeIntensityWrap.style.display = 'flex';
+            self.vibePreview.style.display = 'block';
+            self.vibeIntensityWrap.style.display = 'block';
+            self.vibeDropzone.style.display = 'none';
         } else {
-            self.vibePreview.style.display = 'none';
             self.vibePreviewImg.src = '';
+            self.vibePreview.style.display = 'none';
             self.vibeIntensityWrap.style.display = 'none';
+            self.vibeDropzone.style.display = 'flex';
+        }
+
+        if (activeDraft.params && activeDraft.params.sampler) {
+            self.samplerSelect.value = activeDraft.params.sampler;
         }
 
         self.syncParameters();
@@ -1237,45 +1312,6 @@ window.StudioManager = {
         activeDraft.params.manualArtists = self.taManualArtists.value;
 
         self.saveDraftsToStorage();
-    },
-
-    // 打开沉浸式编辑器弹窗，并载入当前 UI 数据
-    openComposerModal() {
-        const self = this;
-        if (!self.composerModal) return;
-        
-        // 读取当前工作台面板的提示词
-        self.composerSubject.value = self.taSubject ? self.taSubject.value : '';
-        self.composerPrompt.value = self.taPrompt ? self.taPrompt.value : '';
-        self.composerNegative.value = self.taNegativePrompt ? self.taNegativePrompt.value : '';
-        
-        // 触发一次统计更新
-        self.composerSubject.dispatchEvent(new Event('input'));
-        
-        // 激活弹窗显现
-        self.composerModal.classList.add('active');
-        
-        // 聚焦于主旨输入框
-        setTimeout(() => {
-            self.composerSubject.focus();
-        }, 100);
-    },
-
-    // 将弹窗中的数据写回当前工作台，并存入 LocalStorage 草稿
-    applyComposerData() {
-        const self = this;
-        
-        if (self.taSubject) self.taSubject.value = self.composerSubject.value;
-        if (self.taPrompt) self.taPrompt.value = self.composerPrompt.value;
-        if (self.taNegativePrompt) self.taNegativePrompt.value = self.composerNegative.value;
-        
-        // 触发高度自适应（若使用了 textarea 自动高度）
-        if (self.taSubject) self.taSubject.dispatchEvent(new Event('input'));
-        if (self.taPrompt) self.taPrompt.dispatchEvent(new Event('input'));
-        
-        // 立即存入草稿箱，刷新缓冲区
-        self.saveUIToActiveDraft();
-        self.showNotification('编辑器内容已成功同步至工作台');
     },
 
     saveDraftsToStorage() {
@@ -2265,74 +2301,6 @@ window.StudioManager = {
 
     renderArtistLab() {
         // 画师实验室内部相关渲染占位
-    },
-
-    // 智能图像处理 (Vibe base64 读取)
-    handleVibeImageUpload(file) {
-        const self = this;
-        if (!file.type.startsWith('image/')) {
-            self.showNotification('只允许上传图片作为 Vibe 参考图');
-            return;
-        }
-
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const base64 = e.target.result;
-            
-            // 写入当前草稿
-            const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
-            if (activeDraft) {
-                if (!activeDraft.params) activeDraft.params = {};
-                activeDraft.params.vibeBase64 = base64;
-                self.saveDraftsToStorage();
-
-                // UI 更新
-                self.vibePreview.style.display = 'block';
-                self.vibePreviewImg.src = base64;
-                self.vibeIntensityWrap.style.display = 'flex';
-                self.showNotification('已成功加载 Vibe 图片');
-            }
-        };
-        reader.readAsDataURL(file);
-    },
-
-    // 打开沉浸式编辑器弹窗，并载入当前 UI 数据
-    openComposerModal() {
-        const self = this;
-        if (!self.composerModal) return;
-        
-        // 读取当前工作台面板的提示词
-        self.composerSubject.value = self.taSubject ? self.taSubject.value : '';
-        self.composerPrompt.value = self.taPrompt ? self.taPrompt.value : '';
-        self.composerNegative.value = self.taNegativePrompt ? self.taNegativePrompt.value : '';
-        
-        // 触发一次统计更新
-        self.composerSubject.dispatchEvent(new Event('input'));
-        
-        // 激活弹窗显现
-        self.composerModal.classList.add('active');
-        
-        // 聚焦于主旨输入框
-        setTimeout(() => {
-            self.composerSubject.focus();
-        }, 100);
-    },
-
-    // 将弹窗中的数据写回当前工作台，并存入 LocalStorage 草稿
-    applyComposerData() {
-        const self = this;
-        
-        if (self.taSubject) self.taSubject.value = self.composerSubject.value;
-        if (self.taPrompt) self.taPrompt.value = self.composerPrompt.value;
-        if (self.taNegativePrompt) self.taNegativePrompt.value = self.composerNegative.value;
-        
-        // 触发高度自适应（若使用了 textarea 自动高度）
-        if (self.taSubject) self.taSubject.dispatchEvent(new Event('input'));
-        if (self.taPrompt) self.taPrompt.dispatchEvent(new Event('input'));
-        
-        // 立即存入草稿箱，刷新缓冲区
-        self.saveUIToActiveDraft();
-        self.showNotification('编辑器内容已成功同步至工作台');
     }
 };
 
@@ -2340,3 +2308,4 @@ window.StudioManager = {
 document.addEventListener('DOMContentLoaded', () => {
     window.StudioManager.init();
 });
+
