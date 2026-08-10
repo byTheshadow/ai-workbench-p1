@@ -101,146 +101,388 @@ function getCleanProxyUrl(targetUrl, userProxy) {
         return proxy + encodeURIComponent(targetUrl);
     }
 
-    // 传统的前缀型代理 (直接在 URL 前追加)
-    if (!proxy.endsWith('/')) {
-        proxy += '/';
-    }
-    return proxy + targetUrl;
+    // 兼容传统前缀型代理
+    return proxy.replace(/\/$/, '') + '/' + targetUrl;
 }
 
 // ==========================================================================
-// 2. 调度队列机制 (Scheduling Queue)
+// 2. 并发队列调度器 (Task Queue Scheduler - 已修复 unshift 报错并支持智能代理路由)
 // ==========================================================================
-class GeneratorQueue extends EventTarget {
-    constructor() {
-        super();
-        this.queue = [];
-        this.active = [];
-        this.completed = [];
-        this.failed = [];
-        this.maxConcurrent = 1;
-        this.listeners = [];
+class QueueScheduler {
+    constructor(maxConcurrency = 5) {
+        this.maxConcurrency = maxConcurrency;
+        this.queue = [];      // 等待执行的任务
+        this.active = [];     // 正在执行的任务
+        this.completed = [];  // 近期已完成任务历史
+        this.failed = [];     // 近期失败任务历史
+        this.listeners = [];  // 队列状态监听器
     }
 
     addEventListener(callback) {
         this.listeners.push(callback);
     }
 
-    emit() {
+    notify() {
         const state = {
-            queue: [...this.queue],
-            active: [...this.active],
-            completed: [...this.completed],
-            failed: [...this.failed]
+            queue: this.queue,
+            active: this.active,
+            completed: this.completed,
+            failed: this.failed
         };
-        this.listeners.forEach(fn => fn(state));
+        this.listeners.forEach(cb => cb(state));
     }
 
     enqueue(task) {
-        const self = this;
-        const taskItem = {
-            id: 'task_' + Date.now() + Math.random().toString(36).substr(2, 3),
-            backend: task.backend,
-            prompt: task.prompt,
-            params: task.params,
-            timestamp: Date.now(),
-            status: 'waiting',
-            controller: new AbortController()
-        };
+        task.id = task.id || 'task_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+        task.timestamp = task.timestamp || Date.now();
+        task.status = 'queued';
+        task.controller = new AbortController();
 
-        this.queue.push(taskItem);
-        this.emit();
-        this.next();
+        this.queue.push(task);
+        this.notify();
+        this.schedule();
     }
 
-    cancel(taskId) {
-        const qIdx = this.queue.findIndex(t => t.id === taskId);
-        if (qIdx !== -1) {
-            this.queue.splice(qIdx, 1);
-            this.emit();
+    cancel(id) {
+        const index = this.queue.findIndex(t => t.id === id);
+        if (index > -1) {
+            this.queue.splice(index, 1);
+            this.notify();
             return;
         }
 
-        const aIdx = this.active.findIndex(t => t.id === taskId);
-        if (aIdx !== -1) {
-            const task = this.active[aIdx];
-            task.controller.abort();
-            this.active.splice(aIdx, 1);
-            this.emit();
-            this.next();
+        const activeTask = this.active.find(t => t.id === id);
+        if (activeTask) {
+            activeTask.controller.abort();
+            this.active = this.active.filter(t => t.id !== id);
+            this.notify();
+            this.schedule();
         }
     }
 
     cancelAll() {
-        this.active.forEach(t => t.controller.abort());
-        this.active = [];
         this.queue = [];
-        this.emit();
+        this.active.forEach(task => {
+            if (task.controller) task.controller.abort();
+        });
+        this.active = [];
+        this.notify();
     }
 
     clearHistory() {
         this.completed = [];
         this.failed = [];
-        this.emit();
+        this.notify();
     }
 
-    async next() {
-        const self = this;
-        if (self.active.length >= self.maxConcurrent) return;
-        if (self.queue.length === 0) return;
+    schedule() {
+        while (this.active.length < this.maxConcurrency && this.queue.length > 0) {
+            const task = this.queue.shift();
+            task.status = 'generating';
+            this.active.push(task);
+            this.notify();
+            this.executeTask(task);
+        }
+    }
 
-        const task = this.queue.shift();
-        task.status = 'generating';
-        self.active.push(task);
-        self.emit();
-
+    // 真正发起 HTTP 请求生图
+    async executeTask(task) {
         try {
-            const record = await window.StudioManager.executeGenerationTask(task, task.controller);
-            task.status = 'completed';
-            task.record = record;
-            
-            // 移入完成列表并截断保留最近10个记录
-            self.completed.unshift(task);
-            if (self.completed.length > 10) self.completed.pop();
-            
-            self.active = self.active.filter(t => t.id !== task.id);
-            self.emit();
-            
-            window.StudioManager.showNotification('绘图线程渲染完毕，已存盘');
-            window.StudioManager.refreshGallery();
-        } catch (err) {
-            if (err.name === 'AbortError') {
-                task.status = 'cancelled';
-                task.error = 'User Interrupted';
-            } else {
-                task.status = 'failed';
-                task.error = err.message || String(err);
-                
-                // 仅在任务未被取消且出真错时抛出气泡弹窗
-                window.StudioManager.showSystemError('生图线程异常中断', task.error);
-            }
-            self.failed.unshift(task);
-            if (self.failed.length > 10) self.failed.pop();
+            const globalData = JSON.parse(localStorage.getItem('studio_workbench_data') || '{}');
+            const apiConfig = globalData.apiConfig || {};
 
-            self.active = self.active.filter(t => t.id !== task.id);
-            self.emit();
-        } finally {
-            self.next();
+            let finalImageBlob = null;
+            let finalSeed = task.params.seed;
+            if (finalSeed === -1 || !finalSeed) {
+                finalSeed = Math.floor(Math.random() * 9999999999);
+            }
+
+            if (task.backend === 'novelai') {
+                const naiUrl = apiConfig.naiUrl || 'https://api.novelai.net';
+                const endpoint = `${naiUrl.replace(/\/$/, '')}/ai/generate-image`;
+
+                const payload = {
+                    input: task.prompt,
+                    model: task.params.model || 'nai-diffusion-3',
+                    action: 'generate',
+                    parameters: {
+                        width: task.params.width,
+                        height: task.params.height,
+                        scale: task.params.scale,
+                        sampler: task.params.sampler || 'k_euler',
+                        steps: task.params.steps,
+                        seed: finalSeed,
+                        n_samples: 1,
+                        legacy: false,
+                        add_original_image: true,
+                        uncond_scale: 1,
+                        cfg_rescale: 0,
+                        noise: 0,
+                        negative_prompt: task.params.negativePrompt || ''
+                    }
+                };
+
+                if (task.params.smea) {
+                    payload.parameters.sm = true;
+                    if (task.params.smeaDyn) {
+                        payload.parameters.sm_dyn = true;
+                    }
+                }
+
+                // NovelAI Vibe Transfer 参考图发送逻辑
+                if (task.params.vibeBase64) {
+                    const cleanB64 = task.params.vibeBase64.includes('base64,')
+                        ? task.params.vibeBase64.split('base64,')[1]
+                        : task.params.vibeBase64;
+
+                    payload.parameters.reference_images = [
+                        {
+                            image: cleanB64,
+                            strength: task.params.vibeStrength || 0.6,
+                            information_extracted: 1.0
+                        }
+                    ];
+                    payload.parameters.reference_image_multiple = [cleanB64];
+                    payload.parameters.reference_strength_multiple = [task.params.vibeStrength || 0.6];
+                    payload.parameters.reference_information_extracted_multiple = [1.0];
+                }
+
+                const headers = { 'Content-Type': 'application/json' };
+                if (apiConfig.naiToken) {
+                    headers['Authorization'] = `Bearer ${apiConfig.naiToken}`;
+                }
+
+                const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
+                const response = await fetch(proxyUrl, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(payload),
+                    signal: task.controller.signal
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(`NovelAI 远端报错: Status ${response.status} - ${errText}`);
+                }
+
+                const zipData = await response.arrayBuffer();
+                const zip = new JSZip();
+                const unzipped = await zip.loadAsync(zipData);
+                const keys = Object.keys(unzipped.files);
+                if (keys.length === 0) {
+                    throw new Error('NovelAI 返回包中未找到任何解压文件。');
+                }
+                finalImageBlob = await unzipped.files[keys[0]].async('blob');
+
+            } else if (task.backend === 'sd') {
+                const sdUrl = apiConfig.sdUrl || 'http://127.0.0.1:7860';
+                const hasVibe = !!task.params.vibeBase64;
+                const endpoint = hasVibe
+                    ? `${sdUrl.replace(/\/$/, '')}/sdapi/v1/img2img`
+                    : `${sdUrl.replace(/\/$/, '')}/sdapi/v1/txt2img`;
+
+                const payload = {
+                    prompt: task.prompt,
+                    negative_prompt: task.params.negativePrompt || '',
+                    steps: task.params.steps,
+                    cfg_scale: task.params.scale,
+                    width: task.params.width,
+                    height: task.params.height,
+                    seed: finalSeed,
+                    sampler_name: task.params.sampler || 'Euler a'
+                };
+
+                if (hasVibe) {
+                    const cleanB64 = task.params.vibeBase64.includes('base64,')
+                        ? task.params.vibeBase64.split('base64,')[1]
+                        : task.params.vibeBase64;
+
+                    payload.init_images = [cleanB64];
+                    payload.denoising_strength = Math.max(0, Math.min(1, 1 - (task.params.vibeStrength || 0.6)));
+                }
+
+                const headers = { 'Content-Type': 'application/json' };
+                if (apiConfig.sdAuth) {
+                    headers['Authorization'] = `Basic ${btoa(apiConfig.sdAuth)}`;
+                }
+
+                let response;
+                try {
+                    response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(payload),
+                        signal: task.controller.signal
+                    });
+                } catch (err) {
+                    const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
+                    response = await fetch(proxyUrl, {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(payload),
+                        signal: task.controller.signal
+                    });
+                }
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(`SD WebUI 报错: Status ${response.status} - ${errText}`);
+                }
+
+                const result = await response.json();
+                if (!result.images || result.images.length === 0) {
+                    throw new Error('SD 响应正常，但未包含生成的图像数组。');
+                }
+
+                const rawB64 = result.images[0];
+                const resByte = atob(rawB64);
+                const byteNumbers = new Array(resByte.length);
+                for (let i = 0; i < resByte.length; i++) {
+                    byteNumbers[i] = resByte.charCodeAt(i);
+                }
+                finalImageBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
+
+            } else if (task.backend === 'v1') {
+                const v1Base = apiConfig.imageV1Url || '';
+                if (!v1Base) {
+                    throw new Error('未配置通用生图 API 接口地址，请前往设置面板填写。');
+                }
+
+                const endpoint = v1Base.replace(/\/$/, '') + '/images/generations';
+
+                const payload = {
+                    model: task.params.model || 'dall-e-3',
+                    prompt: task.prompt,
+                    n: 1,
+                    size: `${task.params.width}x${task.params.height}`
+                };
+
+                if (task.params.vibeBase64) {
+                    payload.image = task.params.vibeBase64;
+                    payload.init_image = task.params.vibeBase64;
+                    payload.image_strength = task.params.vibeStrength || 0.6;
+                }
+
+                const headers = { 'Content-Type': 'application/json' };
+                if (apiConfig.imageV1Key) {
+                    headers['Authorization'] = `Bearer ${apiConfig.imageV1Key}`;
+                }
+
+                const proxyUrl = getCleanProxyUrl(endpoint, apiConfig.corsProxy);
+
+                const response = await fetch(proxyUrl, {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify(payload),
+                    signal: task.controller.signal
+                });
+
+                if (!response.ok) {
+                    const errText = await response.text();
+                    throw new Error(`通用生图 API 报错: Status ${response.status} - ${errText}`);
+                }
+
+                const result = await response.json();
+                if (!result.data || result.data.length === 0) {
+                    throw new Error('通用 API 响应正常，但 data 图像列表为空。');
+                }
+
+                const imgObj = result.data[0];
+                const imageUrl = imgObj.url;
+                const b64Json = imgObj.b64_json;
+
+                if (imageUrl) {
+                    const proxyImgUrl = getCleanProxyUrl(imageUrl, apiConfig.corsProxy);
+                    let imgRes = await fetch(proxyImgUrl);
+                    if (!imgRes.ok) {
+                        imgRes = await fetch(imageUrl);
+                    }
+                    if (!imgRes.ok) throw new Error("无法从生成的 URL 地址下载图片实体");
+                    finalImageBlob = await imgRes.blob();
+                } else if (b64Json) {
+                    const rawB64 = b64Json.replace(/^data:image\/\w+;base64,/, "");
+                    const resByte = atob(rawB64);
+                    const byteNumbers = new Array(resByte.length);
+                    for (let i = 0; i < resByte.length; i++) {
+                        byteNumbers[i] = resByte.charCodeAt(i);
+                    }
+                    finalImageBlob = new Blob([new Uint8Array(byteNumbers)], { type: 'image/png' });
+                } else {
+                    throw new Error("通用 API 返回的数据中未找到任何图片内容");
+                }
+            }
+
+            let thumbBase64 = null;
+            if (window.StudioManager && typeof window.StudioManager.createThumbnail === 'function') {
+                thumbBase64 = await window.StudioManager.createThumbnail(finalImageBlob);
+            }
+
+            const record = {
+                id: task.id,
+                timestamp: task.timestamp,
+                backend: task.backend,
+                prompt: task.prompt,
+                negativePrompt: task.params.negativePrompt || '',
+                params: {
+                    width: task.params.width,
+                    height: task.params.height,
+                    steps: task.params.steps,
+                    scale: task.params.scale,
+                    sampler: task.params.sampler,
+                    seed: finalSeed,
+                    model: task.params.model || '',
+                    smea: task.params.smea || false,
+                    smeaDyn: task.params.smeaDyn || false,
+                    vibeStrength: task.params.vibeStrength || 0.6
+                },
+                thumb: thumbBase64,
+                imageBlob: finalImageBlob
+            };
+
+            await GalleryDB.save(record);
+
+            if (!this.completed) this.completed = [];
+            task.status = 'completed';
+            task.thumb = thumbBase64;
+            task.record = record;
+            this.completed.unshift(task);
+            if (this.completed.length > 10) this.completed.pop();
+
+            this.active = this.active.filter(t => t.id !== task.id);
+            this.notify();
+            this.schedule();
+
+            if (window.StudioManager) {
+                window.StudioManager.refreshGallery();
+                window.StudioManager.lastSuccessfulSeed = finalSeed;
+            }
+
+        } catch (error) {
+            console.error('生图任务执行失败:', error);
+            
+            if (!this.failed) this.failed = [];
+            task.status = 'failed';
+            task.error = error.message || '未知错误';
+            this.failed.unshift(task);
+            if (this.failed.length > 10) this.failed.pop();
+
+            this.active = this.active.filter(t => t.id !== task.id);
+            this.notify();
+            this.schedule();
         }
     }
 }
 
-const generatorQueue = new GeneratorQueue();
+const generatorQueue = new QueueScheduler(5);
 
 // ==========================================================================
-// 3. WORKBENCH MANAGER 主类对象
+// 3. 生图工作室主控管理对象 (StudioManager)
 // ==========================================================================
 window.StudioManager = {
-    // 数据模型
     drafts: [
         {
-            id: 'draft-default',
-            name: '默认草稿 #1',
+            id: 'draft_default',
+            name: '草稿 A',
             prompt: '',
             subject: '',
             negativePrompt: '',
@@ -251,161 +493,152 @@ window.StudioManager = {
                 height: 1216,
                 steps: 28,
                 scale: 5.0,
-                sampler: 'k_euler_ancestral',
+                sampler: 'k_euler',
                 seed: -1,
-                model: 'nai-diffusion-3',
+                model: 'nai-diffusion-4-5-full',
                 smea: false,
                 smeaDyn: false,
-                vibeStrength: 0.6,
                 vibeBase64: null,
-                manualArtists: ''
+                vibeStrength: 0.6
             }
         }
     ],
-    activeDraftId: 'draft-default',
-
-    // 模型数据缓存
+    activeDraftId: 'draft_default',
     modelsCache: {
-        novelai: [],
-        sd_webui: [],
-        comfyui: []
+        novelai: [
+            { id: 'nai-diffusion-4-5-full', name: 'NovelAI Anime V4.5 (Full)' },
+            { id: 'nai-diffusion-4-5-curated', name: 'NovelAI Anime V4.5 (Curated)' },
+            { id: 'nai-diffusion-4-full', name: 'NovelAI Anime V4 (Full)' },
+            { id: 'nai-diffusion-4-curated-preview', name: 'NovelAI Anime V4 (Curated)' },
+            { id: 'nai-diffusion-3', name: 'NovelAI Anime V3' },
+            { id: 'safe-diffusion', name: 'Safe Diffusion (写实)' }
+        ],
+        sd: [],
+        v1: []
     },
 
-    // ==========================================================================
-    // 3.1 跨域代理安全策略与 API 请求器
-    // ==========================================================================
-    async callAPI(url, options = {}, backendName = '') {
-        const globalSettingsStr = localStorage.getItem('studio_settings');
-        let parsed = {};
-        if (globalSettingsStr) {
-            try { parsed = JSON.parse(globalSettingsStr); } catch(e){}
-        }
-
-        const proxy = parsed.apiProxyUrl || '';
-        const userAgent = parsed.customUserAgent || '';
-
-        // 获取对应的 API Key / Token
-        let token = '';
-        if (backendName === 'novelai') {
-            token = parsed.novelaiToken || '';
-        } else if (backendName === 'sd_webui') {
-            token = parsed.sdWebuiAuth || '';
-        } else if (backendName === 'comfyui') {
-            token = parsed.comfyuiAuth || '';
-        }
-
-        // 构建 headers
-        if (!options.headers) options.headers = {};
-        
-        if (token && token.trim()) {
-            if (backendName === 'novelai') {
-                options.headers['Authorization'] = `Bearer ${token.trim()}`;
-            } else {
-                // SD WebUI / ComfyUI Token 兼容
-                options.headers['Authorization'] = token.trim().startsWith('Basic ') 
-                    ? token.trim() 
-                    : `Bearer ${token.trim()}`;
-            }
-        }
-
-        if (userAgent && userAgent.trim()) {
-            options.headers['X-User-Agent'] = userAgent.trim();
-        }
-
-        // 转换请求代理
-        const cleanUrl = getCleanProxyUrl(url, proxy);
-
-        // 发起网络请求
-        return fetch(cleanUrl, options);
-    },
-
-    // ==========================================================================
-    // 3.2 动态获取并更新模型列表
-    // ==========================================================================
+    // 动态拉取服务器模型列表
     async fetchModelsFromServer(backend, forceRefresh = false) {
         const self = this;
+        const PRESET_V1_MODELS = [
+            { id: 'dall-e-3', name: 'DALL-E 3 (OpenAI)' },
+            { id: 'midjourney', name: 'Midjourney (XHUB/兼容)' },
+            { id: 'flux', name: 'FLUX (Standard/通用)' },
+            { id: 'flux-schnell', name: 'FLUX Schnell (快速生图)' },
+            { id: 'flux-dev', name: 'FLUX Dev (画质精细)' },
+            { id: 'stable-diffusion', name: 'Stable Diffusion (通用兼容)' },
+            { id: 'gpt-4o', name: 'GPT-4o (支持图像模型拓展)' }
+        ];
+
+        if (backend === 'novelai') {
+            self.renderModelOptions(self.modelsCache.novelai);
+            return;
+        }
+
         if (!forceRefresh && self.modelsCache[backend] && self.modelsCache[backend].length > 0) {
             self.renderModelOptions(self.modelsCache[backend]);
             return;
         }
 
-        const globalSettingsStr = localStorage.getItem('studio_settings');
-        let parsed = {};
-        if (globalSettingsStr) {
-            try { parsed = JSON.parse(globalSettingsStr); } catch(e){}
-        }
+        self.modelSelect.innerHTML = '<option value="">正在拉取后端模型...</option>';
+        self.btnRefreshModels.classList.add('spin-icon-generating');
 
-        // 默认空状态时加载本地降级模型库
-        if (backend === 'novelai') {
-            const fallbackNaiModels = [
-                { id: 'nai-diffusion-3', name: 'NovelAI Diffusion V3 (最新推荐)' },
-                { id: 'safe-diffusion-3', name: 'NovelAI Diffusion V3 (Safe)' },
-                { id: 'furry-diffusion-3', name: 'NovelAI Furry V3 (兽人专化)' },
-                { id: 'nai-diffusion-2', name: 'NovelAI Diffusion V2' },
-                { id: 'furry-diffusion', name: 'NovelAI Furry V1' }
-            ];
-            self.modelsCache.novelai = fallbackNaiModels;
-            self.renderModelOptions(fallbackNaiModels);
-            return;
-        }
-
-        let endpoint = '';
-        if (backend === 'sd_webui') {
-            endpoint = parsed.sdWebuiUrl || 'http://127.0.0.1:7860';
-            endpoint = endpoint.replace(/\/$/, '') + '/sdapi/v1/sd-models';
-        } else if (backend === 'comfyui') {
-            endpoint = parsed.comfyuiUrl || 'http://127.0.0.1:8188';
-            endpoint = endpoint.replace(/\/$/, '') + '/api/models'; 
-        }
-
-        if (!endpoint) return;
+        const globalData = JSON.parse(localStorage.getItem('studio_workbench_data') || '{}');
+        const apiConfig = globalData.apiConfig || {};
 
         try {
-            const res = await self.callAPI(endpoint, { method: 'GET' }, backend);
-            if (!res.ok) throw new Error(`HTTP 状态异常: ${res.status}`);
-            const data = await res.json();
+            if (backend === 'sd') {
+                const sdBaseUrl = apiConfig.sdUrl || 'http://127.0.0.1:7860';
+                let fullUrl = sdBaseUrl.replace(/\/$/, '') + '/sdapi/v1/sd-models';
+                fullUrl = getCleanProxyUrl(fullUrl, apiConfig.corsProxy);
 
-            let currentList = [];
-            if (backend === 'sd_webui') {
-                currentList = data.map(item => ({
-                    id: item.title,
-                    name: item.model_name
-                }));
-            } else if (backend === 'comfyui') {
+                const headers = { 'Content-Type': 'application/json' };
+                if (apiConfig.sdKey) {
+                    headers['Authorization'] = `Bearer ${apiConfig.sdKey}`;
+                }
+
+                const response = await fetch(fullUrl, { method: 'GET', headers });
+                if (!response.ok) throw new Error(`SD 接口无响应: Status ${response.status}`);
+                
+                const data = await response.json();
                 if (Array.isArray(data)) {
-                    currentList = data.map(item => ({ id: item, name: item }));
-                } else if (data.checkpoints) {
-                    currentList = data.checkpoints.map(item => ({ id: item, name: item }));
-                } else {
-                    currentList = Object.keys(data).map(k => ({ id: k, name: k }));
+                    self.modelsCache.sd = data.map(item => ({
+                        id: item.title,
+                        name: item.model_name
+                    }));
+                }
+            } else if (backend === 'v1') {
+                const v1Base = apiConfig.imageV1Url || '';
+                if (!v1Base) {
+                    throw new Error('未配置通用生图 API 接口地址');
+                }
+                
+                let fullUrl = v1Base.replace(/\/$/, '') + '/models';
+                fullUrl = getCleanProxyUrl(fullUrl, apiConfig.corsProxy);
+
+                const headers = {};
+                if (apiConfig.imageV1Key) {
+                    headers['Authorization'] = `Bearer ${apiConfig.imageV1Key}`;
+                }
+
+                const response = await fetch(fullUrl, { method: 'GET', headers });
+                if (!response.ok) throw new Error(`生图 models 接口响应异常: Status ${response.status}`);
+                
+                const textData = await response.text();
+                if (textData.trim().startsWith('<!DOCTYPE') || textData.trim().startsWith('<html')) {
+                    throw new SyntaxError('接口返回了 HTML 网页而非 JSON，可能是 CORS 代理未激活或服务被阻断');
+                }
+
+                const data = JSON.parse(textData);
+                if (data && Array.isArray(data.data)) {
+                    self.modelsCache.v1 = data.data.map(item => ({
+                        id: item.id,
+                        name: item.id
+                    }));
                 }
             }
 
-            self.modelsCache[backend] = currentList;
-            self.renderModelOptions(currentList);
-            self.showNotification(`成功获取并缓存了 ${currentList.length} 个模型`);
-        } catch (err) {
-            console.warn(`无法在线获取 ${backend} 模型列表，使用本地预置缓存`, err);
-            let localFallback = [];
-            if (backend === 'sd_webui') {
-                localFallback = [{ id: 'v1-5-pruned-emaonly.safetensors', name: 'Stable Diffusion v1.5 (本地降级)' }];
-            } else if (backend === 'comfyui') {
-                localFallback = [{ id: 'v1-5-pruned-emaonly.safetensors', name: 'v1-5-pruned-emaonly (本地降级)' }];
+            const currentList = self.modelsCache[backend] || [];
+            if (currentList.length === 0) {
+                throw new Error('获取的模型列表数据为空');
+            } else {
+                self.renderModelOptions(currentList);
+                self.showNotification(`成功获取并缓存了 ${currentList.length} 个模型`);
             }
-            self.modelsCache[backend] = localFallback;
-            self.renderModelOptions(localFallback);
-            self.showNotification('已启用预设通用生图模型列表 (本地降级列表)');
+        } catch (error) {
+            console.warn('获取模型失败，启动本地模型降级兜底方案:', error);
+            if (backend === 'v1') {
+                self.modelsCache.v1 = PRESET_V1_MODELS;
+                self.renderModelOptions(PRESET_V1_MODELS);
+                self.showNotification('已启用预设通用生图模型列表 (本地降级列表)');
+            } else {
+                self.modelSelect.innerHTML = '<option value="">模型拉取失败，点击刷新重试</option>';
+                self.showSystemError('模型拉取失败', `无法连接到 ${backend === 'sd' ? 'Stable Diffusion' : '通用 API'} 的模型接口，错误描述: ${error.message}`);
+            }
+        } finally {
+            self.btnRefreshModels.classList.remove('spin-icon-generating');
         }
     },
 
     renderModelOptions(modelList) {
         const self = this;
-        if (!self.modelSelect) return;
         self.modelSelect.innerHTML = '';
+
+        if (!modelList || modelList.length === 0) {
+            self.modelSelect.innerHTML = '<option value="">未获取到可用模型</option>';
+            return;
+        }
+
+        const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
+        const savedModel = (activeDraft && activeDraft.params) ? activeDraft.params.model : '';
+
         modelList.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m.id;
             opt.textContent = m.name;
+            if (m.id === savedModel) {
+                opt.selected = true;
+            }
             self.modelSelect.appendChild(opt);
         });
 
@@ -420,7 +653,7 @@ window.StudioManager = {
     // ==========================================================================
     async init() {
         const self = this;
-        
+
         // 绑定沉浸式编辑器 DOM 节点
         self.composerModal = document.getElementById('studio-composer-modal');
         self.btnOpenComposer = document.getElementById('btn-open-composer');
@@ -436,7 +669,7 @@ window.StudioManager = {
         self.composerBtnApply = document.getElementById('composer-btn-apply');
         self.composerBtnGenerate = document.getElementById('composer-btn-generate');
         self.composerBtnCancel = document.getElementById('composer-btn-cancel');
-
+        
         self.btnGenerate = document.getElementById('btn-studio-generate');
         self.btnInterrupt = document.getElementById('btn-studio-interrupt');
         self.btnRandomSeed = document.getElementById('btn-random-seed');
@@ -936,7 +1169,7 @@ window.StudioManager = {
             self.inputHeight.value = activeDraft.params.height || 1216;
             self.rangeSteps.value = activeDraft.params.steps || 28;
             self.rangeScale.value = activeDraft.params.scale || 5.0;
-            self.samplerSelect.value = activeDraft.params.sampler || 'k_euler_ancestral';
+            self.samplerSelect.value = activeDraft.params.sampler || 'k_euler';
             self.inputSeed.value = activeDraft.params.seed !== undefined ? activeDraft.params.seed : -1;
             
             if (self.cbSmea) self.cbSmea.checked = activeDraft.params.smea || false;
@@ -1623,6 +1856,7 @@ window.StudioManager = {
         }
 
         items.forEach(item => {
+            // 完美对齐美化类名：.gallery-item-card
             const card = document.createElement('div');
             card.className = `gallery-item-card ${self.selectedImageIds.includes(item.id) ? 'selected' : ''}`;
             card.dataset.id = item.id;
@@ -1641,37 +1875,34 @@ window.StudioManager = {
                 img.addEventListener('load', () => {
                     URL.revokeObjectURL(objectUrl);
                 });
-            } else if (item.imageSrc) {
-                // 如果是base64
-                img.src = item.imageSrc;
             }
 
             imgWrapper.appendChild(img);
 
+            // 完美对齐美化类名：.gallery-hover-overlay
             const overlay = document.createElement('div');
             overlay.className = 'gallery-hover-overlay';
 
+            // 提示词摘要对齐类名：.gallery-prompt-snippet
             const infoPrompt = document.createElement('p');
             infoPrompt.className = 'gallery-prompt-snippet';
             infoPrompt.textContent = item.prompt;
             infoPrompt.title = item.prompt;
 
+            // 元数据对齐类名：.gallery-meta-snippet
             const infoMeta = document.createElement('div');
             infoMeta.className = 'gallery-meta-snippet';
-            
-            const seedVal = (item.params && item.params.seed !== undefined) ? item.params.seed : (item.seed !== undefined ? item.seed : -1);
-            const wVal = (item.params && item.params.width) ? item.params.width : (item.width || 512);
-            const hVal = (item.params && item.params.height) ? item.params.height : (item.height || 512);
-            
             infoMeta.innerHTML = `
                 <span>${item.backend.toUpperCase()}</span>
-                <span>${wVal}x${hVal}</span>
-                <span>SEED: ${seedVal}</span>
+                <span>${item.params.width}x${item.params.height}</span>
+                <span>SEED: ${item.params.seed}</span>
             `;
 
+            // 操作组对齐类名：.gallery-card-actions
             const actionContainer = document.createElement('div');
             actionContainer.className = 'gallery-card-actions';
 
+            // 按钮样式对齐：.gallery-card-btn
             const btnSend = document.createElement('button');
             btnSend.className = 'gallery-card-btn';
             btnSend.title = '回填参数至工作台';
@@ -1734,28 +1965,15 @@ window.StudioManager = {
         const self = this;
         self.activeLightboxItem = item;
 
-        if (item.imageBlob) {
-            const objectUrl = URL.createObjectURL(item.imageBlob);
-            self.lightboxImg.src = objectUrl;
-            self.lightboxImg.onload = () => {
-                URL.revokeObjectURL(objectUrl);
-            };
-        } else if (item.imageSrc) {
-            self.lightboxImg.src = item.imageSrc;
-        }
+        const objectUrl = URL.createObjectURL(item.imageBlob);
+        self.lightboxImg.src = objectUrl;
+        self.lightboxImg.onload = () => {
+            URL.revokeObjectURL(objectUrl);
+        };
 
         const dateStr = new Date(item.timestamp).toLocaleString();
         self.lightboxTimestamp.textContent = `生成时间: ${dateStr}`;
-        
-        const seedVal = (item.params && item.params.seed !== undefined) ? item.params.seed : (item.seed !== undefined ? item.seed : -1);
-        const modelVal = (item.params && item.params.model) ? item.params.model : (item.model || 'Standard');
-        const wVal = (item.params && item.params.width) ? item.params.width : (item.width || 512);
-        const hVal = (item.params && item.params.height) ? item.params.height : (item.height || 512);
-        const stepsVal = (item.params && item.params.steps) ? item.params.steps : (item.steps || '--');
-        const scaleVal = (item.params && item.params.scale) ? item.params.scale : (item.scale || '--');
-        const samplerVal = (item.params && item.params.sampler) ? item.params.sampler : (item.sampler || '--');
-
-        self.lightboxEngine.textContent = `${item.backend.toUpperCase()} - ${modelVal}`;
+        self.lightboxEngine.textContent = `${item.backend.toUpperCase()} - ${item.params.model || 'DALL-E 3 / Standard'}`;
         self.lightboxPrompt.textContent = item.prompt;
         
         if (item.negativePrompt) {
@@ -1765,11 +1983,11 @@ window.StudioManager = {
             document.getElementById('lightbox-meta-uc-section').style.display = 'none';
         }
 
-        self.lightboxSeed.textContent = seedVal;
-        self.lightboxDimension.textContent = `${wVal} x ${hVal}`;
-        self.lightboxSteps.textContent = stepsVal;
-        self.lightboxScale.textContent = scaleVal;
-        self.lightboxSampler.textContent = samplerVal;
+        self.lightboxSeed.textContent = item.params.seed;
+        self.lightboxDimension.textContent = `${item.params.width} x ${item.params.height}`;
+        self.lightboxSteps.textContent = item.params.steps || '--';
+        self.lightboxScale.textContent = item.params.scale || '--';
+        self.lightboxSampler.textContent = item.params.sampler || '--';
 
         document.getElementById('btn-copy-meta-prompt').onclick = () => {
             navigator.clipboard.writeText(item.prompt).then(() => {
@@ -1785,27 +2003,19 @@ window.StudioManager = {
         const activeDraft = self.drafts.find(d => d.id === self.activeDraftId);
         if (!activeDraft) return;
 
-        const seedVal = (item.params && item.params.seed !== undefined) ? item.params.seed : (item.seed !== undefined ? item.seed : -1);
-        const modelVal = (item.params && item.params.model) ? item.params.model : (item.model || '');
-        const wVal = (item.params && item.params.width) ? item.params.width : (item.width || 832);
-        const hVal = (item.params && item.params.height) ? item.params.height : (item.height || 1216);
-        const stepsVal = (item.params && item.params.steps) ? item.params.steps : (item.steps || 28);
-        const scaleVal = (item.params && item.params.scale) ? item.params.scale : (item.scale || 5.0);
-        const samplerVal = (item.params && item.params.sampler) ? item.params.sampler : (item.sampler || 'k_euler');
-
         activeDraft.prompt = item.prompt;
         activeDraft.negativePrompt = item.negativePrompt || '';
         activeDraft.targetBackend = item.backend;
         
-        activeDraft.params.width = wVal;
-        activeDraft.params.height = hVal;
-        activeDraft.params.steps = stepsVal;
-        activeDraft.params.scale = scaleVal;
-        activeDraft.params.sampler = samplerVal;
-        activeDraft.params.seed = seedVal;
-        activeDraft.params.model = modelVal;
+        activeDraft.params.width = item.params.width;
+        activeDraft.params.height = item.params.height;
+        activeDraft.params.steps = item.params.steps || 28;
+        activeDraft.params.scale = item.params.scale || 5.0;
+        activeDraft.params.sampler = item.params.sampler || 'k_euler';
+        activeDraft.params.seed = item.params.seed;
+        activeDraft.params.model = item.params.model || '';
 
-        if (item.backend === 'novelai' && item.params) {
+        if (item.backend === 'novelai') {
             activeDraft.params.smea = !!item.params.smea;
             activeDraft.params.smeaDyn = !!item.params.smeaDyn;
         }
@@ -1823,8 +2033,7 @@ window.StudioManager = {
         const globalData = JSON.parse(localStorage.getItem('studio_workbench_data') || '{}');
         if (!globalData.todos) globalData.todos = [];
 
-        const seedVal = (item.params && item.params.seed !== undefined) ? item.params.seed : (item.seed !== undefined ? item.seed : -1);
-        const taskText = `优化图像细节 (Engine: ${item.backend.toUpperCase()} | Seed: ${seedVal})`;
+        const taskText = `优化图像细节 (Engine: ${item.backend.toUpperCase()} | Seed: ${item.params.seed})`;
         
         globalData.todos.push({
             id: 'todo_' + Date.now(),
@@ -1844,21 +2053,12 @@ window.StudioManager = {
         const self = this;
         self.showNotification('开始以该参数并行生成4张不同 Seed 变体...');
         
-        const baseParams = item.params || {
-            width: item.width || 832,
-            height: item.height || 1216,
-            steps: item.steps || 28,
-            scale: item.scale || 5.0,
-            sampler: item.sampler || 'k_euler',
-            model: item.model || ''
-        };
-
         for (let i = 0; i < 4; i++) {
             const task = {
                 backend: item.backend,
                 prompt: item.prompt,
                 params: {
-                    ...baseParams,
+                    ...item.params,
                     seed: Math.floor(Math.random() * 9999999999)
                 }
             };
@@ -1934,29 +2134,18 @@ window.StudioManager = {
         if (!item) return;
 
         let finalBlob = item.imageBlob;
-        const seedVal = (item.params && item.params.seed !== undefined) ? item.params.seed : (item.seed !== undefined ? item.seed : -1);
-
-        if (finalBlob) {
-            if (cleanExif) {
-                finalBlob = await self.cleanMetadata(item.imageBlob);
-            }
-            const url = URL.createObjectURL(finalBlob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `${item.backend}_${seedVal}_${cleanExif ? 'clean_' : ''}${item.id}.png`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-        } else if (item.imageSrc) {
-            // base64 下载兼容
-            const link = document.createElement('a');
-            link.href = item.imageSrc;
-            link.download = `${item.backend}_${seedVal}_${cleanExif ? 'clean_' : ''}${item.id}.png`;
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+        if (cleanExif) {
+            finalBlob = await self.cleanMetadata(item.imageBlob);
         }
+
+        const url = URL.createObjectURL(finalBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${item.backend}_${item.params.seed}_${cleanExif ? 'clean_' : ''}${item.id}.png`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
     },
 
     async downloadMultipleImages(ids, cleanExif = false) {
@@ -1987,23 +2176,14 @@ window.StudioManager = {
 
         for (let i = 0; i < targets.length; i++) {
             const item = targets[i];
-            const seedVal = (item.params && item.params.seed !== undefined) ? item.params.seed : (item.seed !== undefined ? item.seed : 'seed');
-            const filename = `${item.backend}_${seedVal}_${cleanExif ? 'clean_' : ''}${item.id}.png`;
-
-            if (item.imageBlob) {
-                let blob = item.imageBlob;
-                if (cleanExif) {
-                    blob = await self.cleanMetadata(item.imageBlob);
-                }
-                zip.file(filename, blob);
-            } else if (item.imageSrc) {
-                // 如果是base64数据，去除前缀后写入
-                let rawBase64 = item.imageSrc;
-                if (rawBase64.includes(';base64,')) {
-                    rawBase64 = rawBase64.split(';base64,')[1];
-                }
-                zip.file(filename, rawBase64, { base64: true });
+            let blob = item.imageBlob;
+            
+            if (cleanExif) {
+                blob = await self.cleanMetadata(item.imageBlob);
             }
+
+            const filename = `${item.backend}_${item.params.seed || 'seed'}_${cleanExif ? 'clean_' : ''}${item.id}.png`;
+            zip.file(filename, blob);
         }
 
         try {
@@ -2116,336 +2296,43 @@ window.StudioManager = {
         reader.readAsDataURL(file);
     },
 
-    // 编译 NovelAI 的 ZIP 响应包转成 base64
-    async unzipNovelAIResponse(buffer) {
-        const view = new Uint8Array(buffer);
-        let pngOffset = -1;
-        for (let i = 0; i < view.length - 3; i++) {
-            if (view[i] === 0x89 && view[i+1] === 0x50 && view[i+2] === 0x4e && view[i+3] === 0x47) {
-                pngOffset = i;
-                break;
-            }
-        }
-        if (pngOffset === -1) {
-            throw new Error('生图返回的二进制包中未能匹配到标准的 PNG 图像文件头');
-        }
-
-        const pngBytes = view.subarray(pngOffset);
-        let binary = '';
-        const len = pngBytes.byteLength;
-        const chunkSize = 65536;
-        for (let i = 0; i < len; i += chunkSize) {
-            const slice = pngBytes.subarray(i, i + chunkSize);
-            binary += String.fromCharCode.apply(null, slice);
-        }
-        return 'data:image/png;base64,' + btoa(binary);
-    },
-
-    // 智能化 ComfyUI 占位符检测替换
-    replaceComfyUIPlaceholders(workflow, vars) {
-        const str = JSON.stringify(workflow);
-        let replacedStr = str
-            .replace(/\${prompt}/g, () => JSON.stringify(vars.prompt).slice(1, -1))
-            .replace(/\${negative}/g, () => JSON.stringify(vars.negative).slice(1, -1))
-            .replace(/\${seed}/g, () => String(vars.seed))
-            .replace(/\${width}/g, () => String(vars.width))
-            .replace(/\${height}/g, () => String(vars.height))
-            .replace(/\${steps}/g, () => String(vars.steps))
-            .replace(/\${cfg}/g, () => String(vars.cfg))
-            .replace(/\${sampler}/g, () => JSON.stringify(vars.sampler).slice(1, -1))
-            .replace(/\${model}/g, () => JSON.stringify(vars.model || '').slice(1, -1));
+    // 打开沉浸式编辑器弹窗，并载入当前 UI 数据
+    openComposerModal() {
+        const self = this;
+        if (!self.composerModal) return;
         
-        return JSON.parse(replacedStr);
+        // 读取当前工作台面板的提示词
+        self.composerSubject.value = self.taSubject ? self.taSubject.value : '';
+        self.composerPrompt.value = self.taPrompt ? self.taPrompt.value : '';
+        self.composerNegative.value = self.taNegativePrompt ? self.taNegativePrompt.value : '';
+        
+        // 触发一次统计更新
+        self.composerSubject.dispatchEvent(new Event('input'));
+        
+        // 激活弹窗显现
+        self.composerModal.classList.add('active');
+        
+        // 聚焦于主旨输入框
+        setTimeout(() => {
+            self.composerSubject.focus();
+        }, 100);
     },
 
-    // ComfyUI 结果轮询
-    async pollComfyUIStatus(baseUrl, promptId, clientUUID, abortController) {
+    // 将弹窗中的数据写回当前工作台，并存入 LocalStorage 草稿
+    applyComposerData() {
         const self = this;
-        const historyUrl = baseUrl.replace(/\/$/, '') + '/history/' + promptId;
-
-        const maxAttempts = 120; // 最多等 2 分钟
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            if (abortController.signal.aborted) {
-                throw new Error('AbortError');
-            }
-
-            await new Promise(r => setTimeout(r, 1000));
-
-            try {
-                const res = await self.callAPI(historyUrl, { method: 'GET' }, 'comfyui');
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data[promptId]) {
-                        const historyInfo = data[promptId];
-                        const outputs = historyInfo.outputs;
-                        let filename = '';
-                        let subfolder = '';
-                        let type = 'output';
-
-                        for (const nodeId in outputs) {
-                            if (outputs[nodeId].images && outputs[nodeId].images.length > 0) {
-                                filename = outputs[nodeId].images[0].filename;
-                                subfolder = outputs[nodeId].images[0].subfolder || '';
-                                type = outputs[nodeId].images[0].type || 'output';
-                                break;
-                            }
-                        }
-
-                        if (!filename) throw new Error('任务历史显示已完成，但无法定位任何输出图像文件。');
-
-                        const viewUrl = `${baseUrl.replace(/\/$/, '')}/view?filename=${encodeURIComponent(filename)}&subfolder=${encodeURIComponent(subfolder)}&type=${type}`;
-                        const imgRes = await self.callAPI(viewUrl, { method: 'GET' }, 'comfyui');
-                        if (!imgRes.ok) throw new Error('拉取 ComfyUI 输出图片失败');
-                        
-                        const blob = await imgRes.blob();
-                        return new Promise((resolve, reject) => {
-                            const reader = new FileReader();
-                            reader.onloadend = () => resolve(reader.result);
-                            reader.onerror = reject;
-                            reader.readAsDataURL(blob);
-                        });
-                    }
-                }
-            } catch (err) {
-                console.warn("轮询 ComfyUI 发生瞬态错误:", err);
-            }
-        }
-        throw new Error('ComfyUI 任务执行超时');
-    },
-
-    // 执行后台生图任务的细分逻辑
-    async executeGenerationTask(taskItem, abortController) {
-        const self = this;
-        const globalSettingsStr = localStorage.getItem('studio_settings');
-        let parsed = {};
-        if (globalSettingsStr) {
-            try { parsed = JSON.parse(globalSettingsStr); } catch(e){}
-        }
-
-        const seedVal = parseInt(taskItem.params.seed) === -1 
-            ? Math.floor(Math.random() * 9999999999) 
-            : parseInt(taskItem.params.seed);
-
-        const backend = taskItem.backend;
-
-        if (backend === 'novelai') {
-            const endpoint = (parsed.novelaiUrl || 'https://api.novelai.net').replace(/\/$/, '') + '/ai/generate-image';
-            
-            const payload = {
-                input: taskItem.prompt,
-                model: taskItem.params.model || 'nai-diffusion-3',
-                action: 'generate',
-                parameters: {
-                    width: taskItem.params.width || 832,
-                    height: taskItem.params.height || 1216,
-                    scale: parseFloat(taskItem.params.scale) || 5.0,
-                    sampler: taskItem.params.sampler || 'k_euler_ancestral',
-                    steps: parseInt(taskItem.params.steps) || 28,
-                    seed: seedVal,
-                    n_samples: 1,
-                    ucPreset: 0,
-                    qualityToggle: true,
-                    sm: !!taskItem.params.smea,
-                    smDyn: !!taskItem.params.smeaDyn,
-                    dynamic_thresholding: false,
-                    controlnet_strength: 1,
-                    legacy_v2_enjoy_except_recreative: false,
-                    add_original_image: true,
-                    uncond_scale: 1,
-                    cfg_rescale: 0,
-                    negative_prompt: taskItem.params.negativePrompt || ''
-                }
-            };
-
-            if (taskItem.params.vibeBase64) {
-                let pureBase64 = taskItem.params.vibeBase64;
-                if (pureBase64.includes(';base64,')) {
-                    pureBase64 = pureBase64.split(';base64,')[1];
-                }
-                const strength = parseFloat(taskItem.params.vibeStrength) || 0.6;
-                payload.parameters.reference_image_multiple = [pureBase64];
-                payload.parameters.reference_information_extracted_multiple = [strength];
-                payload.parameters.reference_strength_multiple = [1.0];
-            }
-
-            const res = await self.callAPI(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload),
-                signal: abortController.signal
-            }, 'novelai');
-
-            if (!res.ok) {
-                let errMsg = `HTTP ${res.status}`;
-                try {
-                    const errData = await res.json();
-                    errMsg += ` - ${errData.message || JSON.stringify(errData)}`;
-                } catch(e){}
-                throw new Error(errMsg);
-            }
-
-            const buffer = await res.arrayBuffer();
-            const base64Data = await self.unzipNovelAIResponse(buffer);
-
-            // 将 base64 转回 Blob 安全存储到 IndexedDB
-            const responseBlob = await fetch(base64Data).then(r => r.blob());
-            const thumbBase64 = await self.createThumbnail(responseBlob);
-
-            const galleryItem = {
-                id: 'gallery_' + Date.now() + Math.random().toString(36).substr(2, 3),
-                timestamp: Date.now(),
-                backend: 'novelai',
-                prompt: taskItem.prompt,
-                negativePrompt: taskItem.params.negativePrompt || '',
-                imageBlob: responseBlob,
-                thumb: thumbBase64,
-                params: {
-                    width: taskItem.params.width,
-                    height: taskItem.params.height,
-                    steps: taskItem.params.steps,
-                    scale: taskItem.params.scale,
-                    sampler: taskItem.params.sampler,
-                    seed: seedVal,
-                    model: taskItem.params.model,
-                    smea: taskItem.params.smea,
-                    smeaDyn: taskItem.params.smeaDyn
-                }
-            };
-
-            await GalleryDB.save(galleryItem);
-            self.lastSuccessfulSeed = seedVal;
-            return galleryItem;
-
-        } else if (backend === 'sd_webui') {
-            const baseUrl = parsed.sdWebuiUrl || 'http://127.0.0.1:7860';
-            const endpoint = baseUrl.replace(/\/$/, '') + '/sdapi/v1/txt2img';
-
-            const payload = {
-                prompt: taskItem.prompt,
-                negative_prompt: taskItem.params.negativePrompt || '',
-                seed: seedVal,
-                sampler_name: taskItem.params.sampler || 'Euler a',
-                batch_size: 1,
-                steps: parseInt(taskItem.params.steps) || 28,
-                cfg_scale: parseFloat(taskItem.params.scale) || 7.0,
-                width: taskItem.params.width || 512,
-                height: taskItem.params.height || 512,
-                override_settings: {
-                    sd_model_checkpoint: taskItem.params.model
-                }
-            };
-
-            const res = await self.callAPI(endpoint, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload),
-                signal: abortController.signal
-            }, 'sd_webui');
-
-            if (!res.ok) throw new Error(`SD WebUI HTTP 异常 ${res.status}`);
-            const data = await res.json();
-            if (!data.images || data.images.length === 0) throw new Error('未收到生成的图片数据');
-
-            const base64Data = 'data:image/png;base64,' + data.images[0];
-            const responseBlob = await fetch(base64Data).then(r => r.blob());
-            const thumbBase64 = await self.createThumbnail(responseBlob);
-
-            const galleryItem = {
-                id: 'gallery_' + Date.now() + Math.random().toString(36).substr(2, 3),
-                timestamp: Date.now(),
-                backend: 'sd_webui',
-                prompt: taskItem.prompt,
-                negativePrompt: taskItem.params.negativePrompt || '',
-                imageBlob: responseBlob,
-                thumb: thumbBase64,
-                params: {
-                    width: taskItem.params.width,
-                    height: taskItem.params.height,
-                    steps: taskItem.params.steps,
-                    scale: taskItem.params.scale,
-                    sampler: taskItem.params.sampler,
-                    seed: seedVal,
-                    model: taskItem.params.model
-                }
-            };
-
-            await GalleryDB.save(galleryItem);
-            self.lastSuccessfulSeed = seedVal;
-            return galleryItem;
-
-        } else if (backend === 'comfyui') {
-            const baseUrl = parsed.comfyuiUrl || 'http://127.0.0.1:8188';
-            const clientUUID = 'studio-client-' + Math.random().toString(36).substring(2, 10);
-            
-            const workflowJsonStr = parsed.comfyuiWorkflow || '';
-            if (!workflowJsonStr.trim()) {
-                throw new Error('未在全局设置中找到配置的 ComfyUI 工作流 JSON 结构');
-            }
-
-            let workflowObj = {};
-            try {
-                workflowObj = JSON.parse(workflowJsonStr);
-            } catch(e) {
-                throw new Error('ComfyUI 工作流格式解析失败，请确保其为合法的 JSON。');
-            }
-
-            const processedPrompt = self.replaceComfyUIPlaceholders(workflowObj, {
-                prompt: taskItem.prompt,
-                negative: taskItem.params.negativePrompt || '',
-                seed: seedVal,
-                width: taskItem.params.width || 512,
-                height: taskItem.params.height || 512,
-                steps: parseInt(taskItem.params.steps) || 20,
-                cfg: parseFloat(taskItem.params.scale) || 8.0,
-                sampler: taskItem.params.sampler || 'euler',
-                model: taskItem.params.model
-            });
-
-            const promptUrl = baseUrl.replace(/\/$/, '') + '/prompt';
-            const submitRes = await self.callAPI(promptUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt: processedPrompt, client_id: clientUUID }),
-                signal: abortController.signal
-            }, 'comfyui');
-
-            if (!submitRes.ok) throw new Error(`ComfyUI 任务提交失败 HTTP ${submitRes.status}`);
-            const submitData = await submitRes.json();
-            const promptId = submitData.prompt_id;
-
-            const base64Data = await self.pollComfyUIStatus(baseUrl, promptId, clientUUID, abortController);
-            const responseBlob = await fetch(base64Data).then(r => r.blob());
-            const thumbBase64 = await self.createThumbnail(responseBlob);
-
-            const galleryItem = {
-                id: 'gallery_' + Date.now() + Math.random().toString(36).substr(2, 3),
-                timestamp: Date.now(),
-                backend: 'comfyui',
-                prompt: taskItem.prompt,
-                negativePrompt: taskItem.params.negativePrompt || '',
-                imageBlob: responseBlob,
-                thumb: thumbBase64,
-                params: {
-                    width: taskItem.params.width,
-                    height: taskItem.params.height,
-                    steps: taskItem.params.steps,
-                    scale: taskItem.params.scale,
-                    sampler: taskItem.params.sampler,
-                    seed: seedVal,
-                    model: taskItem.params.model
-                }
-            };
-
-            await GalleryDB.save(galleryItem);
-            self.lastSuccessfulSeed = seedVal;
-            return galleryItem;
-        } else {
-            throw new Error(`暂不支持的引擎后端: ${backend}`);
-        }
+        
+        if (self.taSubject) self.taSubject.value = self.composerSubject.value;
+        if (self.taPrompt) self.taPrompt.value = self.composerPrompt.value;
+        if (self.taNegativePrompt) self.taNegativePrompt.value = self.composerNegative.value;
+        
+        // 触发高度自适应（若使用了 textarea 自动高度）
+        if (self.taSubject) self.taSubject.dispatchEvent(new Event('input'));
+        if (self.taPrompt) self.taPrompt.dispatchEvent(new Event('input'));
+        
+        // 立即存入草稿箱，刷新缓冲区
+        self.saveUIToActiveDraft();
+        self.showNotification('编辑器内容已成功同步至工作台');
     }
 };
 
