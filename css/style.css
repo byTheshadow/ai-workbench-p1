@@ -3368,6 +3368,9 @@ body::after {
     50% { opacity: 1; }
     100% { opacity: 0.5; }
 }
+/* ==========================================================================
+   全局队列监控及抽屉完整样式 (ZEN QUEUE MONITOR)
+   ========================================================================== */
 
 /* --- 悬浮队列监视器胶囊按钮 --- */
 .queue-monitor-capsule {
@@ -3392,6 +3395,26 @@ body::after {
 
 .queue-monitor-capsule:active {
     cursor: grabbing;
+}
+
+/* 呼吸状态灯 */
+.queue-status-glow {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #00e676; /* 绿灯 */
+    box-shadow: 0 0 8px #00e676;
+}
+
+/* 只有在有 ACTIVE 任务时才做呼吸动画 */
+.queue-monitor-capsule .queue-status-glow.active-glow {
+    animation: status-pulse 1.5s infinite ease-in-out;
+}
+
+@keyframes status-pulse {
+    0% { opacity: 0.4; transform: scale(0.9); }
+    50% { opacity: 1; transform: scale(1.1); box-shadow: 0 0 12px #00e676; }
+    100% { opacity: 0.4; transform: scale(0.9); }
 }
 
 /* 沙漏图标旋转动画，指示生图进行中 */
@@ -3425,4 +3448,153 @@ body::after {
 
 .queue-monitor-drawer.open {
     display: flex;
+}
+
+.queue-drawer-header {
+    padding: 1.25rem 1.5rem 1rem;
+    border-bottom: 1px solid var(--glass-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.queue-drawer-header h3 {
+    font-family: var(--font-serif);
+    font-size: 0.95rem;
+    letter-spacing: 0.1em;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.queue-drawer-list {
+    flex-grow: 1;
+    overflow-y: auto;
+    padding: 1rem 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.queue-empty-text {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-align: center;
+    margin-top: 1.5rem;
+}
+
+/* --- 队列单个任务卡片项目 --- */
+.queue-task-item {
+    background: var(--bg-diffuse-1);
+    border: 1px solid var(--glass-border);
+    border-radius: 6px;
+    padding: 0.65rem 0.85rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: relative;
+    overflow: hidden;
+    gap: 0.5rem;
+    transition: background 0.2s;
+}
+
+.queue-task-item.active {
+    background: rgba(0, 230, 118, 0.03);
+    border-color: rgba(0, 230, 118, 0.2);
+}
+
+.queue-task-item.queued {
+    background: rgba(0, 0, 0, 0.02);
+}
+
+[data-theme="dark"] .queue-task-item.queued {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.queue-task-item.completed {
+    opacity: 0.7;
+}
+
+.queue-task-item.failed {
+    border-color: rgba(255, 23, 68, 0.2);
+    background: rgba(255, 23, 68, 0.03);
+}
+
+.task-info-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    flex-grow: 1;
+    overflow: hidden;
+}
+
+.task-title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.task-time-stamp {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    font-family: monospace;
+}
+
+.task-title-text {
+    font-size: 0.75rem;
+    color: var(--text-primary);
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 任务状态徽章 */
+.task-badge {
+    font-size: 0.6rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.badge-active {
+    background: rgba(0, 230, 118, 0.15);
+    color: #00c853;
+}
+
+.badge-queued {
+    background: var(--bg-diffuse-2);
+    color: var(--text-secondary);
+}
+
+.badge-completed {
+    background: rgba(120, 120, 120, 0.15);
+    color: var(--text-muted);
+}
+
+.badge-failed {
+    background: rgba(255, 23, 68, 0.15);
+    color: #ff1744;
+}
+
+/* 单个任务终止按钮 */
+.btn-abort-task {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.2s ease;
+}
+
+.btn-abort-task:hover {
+    color: #ff1744;
+    background: rgba(255, 23, 68, 0.08);
 }

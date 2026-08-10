@@ -1671,19 +1671,33 @@ window.StudioManager = {
                 return;
             }
 
+            // 确保更新呼吸灯状态
+            const glowEl = self.queueCapsule.querySelector('.queue-status-glow');
+            if (glowEl) {
+                if (totalActive > 0) {
+                    glowEl.classList.add('active-glow');
+                } else {
+                    glowEl.classList.remove('active-glow');
+                }
+            }
+
             allItems.forEach(item => {
                 const row = document.createElement('div');
-                row.className = `queue-task-row ${item.status}`;
+                row.className = `queue-task-item ${item.status}`;
 
                 // 提取任务提示词摘要作为名字
-                const titleSummary = item.task.prompt ? item.task.prompt.substring(0, 24) + '...' : '未命名任务';
+                const titleSummary = item.task.prompt ? item.task.prompt.substring(0, 22) + '...' : '未命名任务';
                 const timeStr = new Date(item.task.id).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
                 row.innerHTML = `
-                    <div class="task-info">
-                        <span class="task-time">${timeStr}</span>
-                        <span class="task-title" title="${item.task.prompt || ''}">${titleSummary}</span>
-                        <span class="task-badge badge-${item.status}">${item.status.toUpperCase()}</span>
+                    <div class="task-info-block">
+                        <div class="task-title-row">
+                            <span class="task-time-stamp">${timeStr}</span>
+                            <span class="task-title-text" title="${item.task.prompt || ''}">${titleSummary}</span>
+                        </div>
+                        <div>
+                            <span class="task-badge badge-${item.status}">${item.status}</span>
+                        </div>
                     </div>
                 `;
 
@@ -1709,7 +1723,7 @@ window.StudioManager = {
                             self.generatorQueue.tasks = self.generatorQueue.tasks.filter(t => t.id !== item.task.id);
                         }
                         self.updateQueueMonitorUI();
-                        self.showNotification('任务已手动终止');
+                        self.showNotification('任务已终止');
                     };
                     row.appendChild(btnAbort);
                 } else if (item.status === 'failed') {
@@ -1720,6 +1734,7 @@ window.StudioManager = {
             });
         }
     },
+
 
     // ==========================================================================
     // 5. 画师实验室交互 (Artist Lab Core)
