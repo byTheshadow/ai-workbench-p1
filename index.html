@@ -102,10 +102,12 @@
                                                                         <div class="draft-content-container">
 
                             <!-- 1. 新增：主旨/生成要求 (CORE SUBJECT) 高阶包裹器 -->
-                          <div class="subject-input-wrapper">
+                        <div class="subject-input-wrapper" style="margin-bottom: 1rem;">
     <label for="studio-subject-input">本次主旨要求 (Core Subject)</label>
-    <textarea id="studio-subject-input" rows="2" placeholder="输入本次生成的核心主体或场景，例如: 1girl, white hair, fantasy armor"></textarea>
+    <!-- 加上统一的 editor-textarea 类名，并设置初始最小高度与溢出隐藏（用于平滑实现自动高度） -->
+    <textarea id="studio-subject-input" class="editor-textarea" style="min-height: 120px; overflow-y: hidden; resize: none;" placeholder="输入本次生成的核心主体或场景，例如: 1girl, white hair, fantasy armor"></textarea>
 </div>
+
 
                             <!-- 2. 原正面提示词配置头 -->
                             <div class="prompt-header">
@@ -1137,5 +1139,60 @@
     <!-- 本地加载以规避浏览器的 Tracking Prevention 追踪拦截 -->
 <script src="js/jszip.min.js"></script>
     <script src="js/generator.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const btnClear = document.getElementById('btn-clear-studio-prompt');
+            const promptInput = document.getElementById('studio-prompt-input');
+            const subjectInput = document.getElementById('studio-subject-input');
+
+            // ================= 1. 主旨输入框高度跟随内容自适应变长 =================
+            if (subjectInput) {
+                const adjustHeight = () => {
+                    subjectInput.style.height = 'auto';
+                    // 设置高度为滚动高度（scrollHeight），并设定最小高度 120px 限制
+                    subjectInput.style.height = Math.max(120, subjectInput.scrollHeight) + 'px';
+                };
+
+                // 监听输入、内容改变和获取焦点事件
+                subjectInput.addEventListener('input', adjustHeight);
+                subjectInput.addEventListener('change', adjustHeight);
+                subjectInput.addEventListener('focus', adjustHeight);
+
+                // 兼容：当切换“草稿槽位”标签时，由于是点击触发，我们也重新计算一次高度
+                document.addEventListener('click', () => {
+                    setTimeout(adjustHeight, 50);
+                });
+                
+                // 页面初始化时先计算一次高度
+                setTimeout(adjustHeight, 100);
+            }
+
+            // ================= 2. 修复清空按钮不生效的问题 =================
+            if (btnClear) {
+                btnClear.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    if (confirm('确定要清空“本次主旨要求”和“通用正面提示词”吗？')) {
+                        // 清空主旨要求，重置高度，并分发原生事件以便外部草稿系统感知并保存
+                        if (subjectInput) {
+                            subjectInput.value = '';
+                            subjectInput.style.height = '120px'; // 重置为初始最小高度
+                            subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
+                            subjectInput.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                        
+                        // 清空通用正面提示词，并同样分发原生事件
+                        if (promptInput) {
+                            promptInput.value = '';
+                            promptInput.dispatchEvent(new Event('input', { bubbles: true }));
+                            promptInput.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    }
+                });
+            }
+        });
+    </script>
+
 </body>
 </html>
