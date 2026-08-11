@@ -1,48 +1,25 @@
 <!DOCTYPE html>
 <html lang="zh-CN" data-theme="light">
-<head>
+    <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>THE STUDIO WORKBENCH</title>
-    <link rel="stylesheet" href="css/style.css">
-</head>
-<body>
-        <!-- CORS 跨域代理强力拦截器补丁 -->
     <script>
         (function() {
             const originalFetch = window.fetch;
             window.fetch = function(input, init) {
                 let url = typeof input === 'string' ? input : (input && input.url) ? input.url : '';
                 
-                // 如果请求发往 NovelAI 官方，且尚未经过代理转发
+                // 只有发往 NovelAI 官方的请求才进行拦截重写
                 if (url && url.includes('api.novelai.net') && !url.includes('workers.dev') && !url.includes('herokuapp.com')) {
                     let proxy = '';
-                    
-                    // 1. 尝试从浏览器本地缓存中读取保存的代理地址
                     try {
                         proxy = localStorage.getItem('setting-nai-cors') || 
                                 localStorage.getItem('nai-cors') || 
                                 localStorage.getItem('nai_cors') || 
                                 localStorage.getItem('naiCors') || '';
-                        
-                        // 如果没找到，扫描 localStorage 中所有包含 cors 或 proxy 关键字的设置
-                        if (!proxy) {
-                            for (let i = 0; i < localStorage.length; i++) {
-                                const key = localStorage.key(i);
-                                if (key && (key.toLowerCase().includes('cors') || key.toLowerCase().includes('proxy'))) {
-                                    const val = localStorage.getItem(key);
-                                    if (val && (val.startsWith('http://') || val.startsWith('https://'))) {
-                                        proxy = val;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e) {
-                        console.error('[CORS Patch] 读取本地缓存失败', e);
-                    }
+                    } catch (e) {}
 
-                    // 2. 尝试从页面设置输入框中直接读取
                     if (!proxy) {
                         proxy = document.getElementById('setting-nai-cors')?.value || '';
                     }
@@ -50,19 +27,15 @@
                     proxy = proxy.trim();
                     if (proxy) {
                         let newUrl = '';
-                        // 针对你的 ?url= 类型的代理做特殊拼接优化
                         if (proxy.includes('?url=')) {
                             const base = proxy.split('?url=')[0] + '?url=';
                             newUrl = base + encodeURIComponent(url);
                         } else {
-                            // 普通前缀代理
                             const cleanProxy = proxy.endsWith('/') ? proxy : proxy + '/';
                             newUrl = cleanProxy + url;
                         }
+                        console.log(`[CORS Patch] 拦截 NovelAI 请求. 重写为: ${newUrl}`);
 
-                        console.log(`[CORS Patch] 拦截到 NovelAI 请求. 重写地址:\n原地址: ${url}\n新地址: ${newUrl}`);
-
-                        // 重构 Request 对象，保持原请求的所有 Header 和 Body
                         if (typeof input === 'object' && input !== null) {
                             input = new Request(newUrl, input);
                         } else {
@@ -75,6 +48,10 @@
         })();
     </script>
 
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    
 
     <!-- 侧边导航栏 (Desktop) / 顶部导航 (Mobile) -->
     <nav class="sidebar">
