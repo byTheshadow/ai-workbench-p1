@@ -149,8 +149,8 @@
                             <!-- 1. 新增：主旨/生成要求 (CORE SUBJECT) 高阶包裹器 -->
                         <div class="subject-input-wrapper" style="margin-bottom: 1rem;">
     <label for="studio-subject-input">本次主旨要求 (Core Subject)</label>
-    <!-- 加上统一的 editor-textarea 类名，并设置初始最小高度与溢出隐藏（用于平滑实现自动高度） -->
-    <textarea id="studio-subject-input" class="editor-textarea" style="min-height: 120px; overflow-y: hidden; resize: none;" placeholder="输入本次生成的核心主体或场景，例如: 1girl, white hair, fantasy armor"></textarea>
+    <!-- 将 overflow-y 改为 auto（允许滚动条），并增加了 max-height: 300px（最大限制高度） -->
+    <textarea id="studio-subject-input" class="editor-textarea" style="min-height: 120px; max-height: 300px; overflow-y: auto; resize: none;" placeholder="输入本次生成的核心主体或场景，例如: 1girl, white hair, fantasy armor"></textarea>
 </div>
 
 
@@ -1184,18 +1184,27 @@
     <!-- 本地加载以规避浏览器的 Tracking Prevention 追踪拦截 -->
 <script src="js/jszip.min.js"></script>
     <script src="js/generator.js"></script>
+    <!-- 强力修复：主旨框打字自动变长（带滚动条限制）+ 清空按钮状态同步补丁 -->
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const btnClear = document.getElementById('btn-clear-studio-prompt');
             const promptInput = document.getElementById('studio-prompt-input');
             const subjectInput = document.getElementById('studio-subject-input');
 
-            // ================= 1. 主旨输入框高度跟随内容自适应变长 =================
+            // ================= 1. 主旨输入框高度跟随内容自适应变长（限高并允许滚动） =================
             if (subjectInput) {
                 const adjustHeight = () => {
                     subjectInput.style.height = 'auto';
-                    // 设置高度为滚动高度（scrollHeight），并设定最小高度 120px 限制
-                    subjectInput.style.height = Math.max(120, subjectInput.scrollHeight) + 'px';
+                    
+                    // 获取当前文字的真实滚动高度
+                    const scrollHeight = subjectInput.scrollHeight;
+                    
+                    // 动态设置高度（在最小 120px 和最大 300px 之间变化）
+                    if (scrollHeight > 300) {
+                        subjectInput.style.height = '300px';
+                    } else {
+                        subjectInput.style.height = Math.max(120, scrollHeight) + 'px';
+                    }
                 };
 
                 // 监听输入、内容改变和获取焦点事件
@@ -1203,7 +1212,7 @@
                 subjectInput.addEventListener('change', adjustHeight);
                 subjectInput.addEventListener('focus', adjustHeight);
 
-                // 兼容：当切换“草稿槽位”标签时，由于是点击触发，我们也重新计算一次高度
+                // 兼容切换草稿槽位时的重新计算
                 document.addEventListener('click', () => {
                     setTimeout(adjustHeight, 50);
                 });
