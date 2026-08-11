@@ -4,67 +4,27 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>THE STUDIO WORKBENCH</title>
-        <!-- CORS 跨域代理强力拦截器补丁 -->
     <script>
         (function() {
-            // ================= 【手动配置备用】 =================
-            // 如果自动识别失败，你可以直接把你的代理地址写在下面双引号里：
-            const HARDCODED_PROXY = "https://my-cors-proxy.loud23for.workers.dev/?url=";
-            // ====================================================
-
-            // 智能扫描本地缓存，支持提取 JSON 对象内部的代理地址
-            function findProxyFromStorage() {
-                if (HARDCODED_PROXY && HARDCODED_PROXY.trim()) {
-                    return HARDCODED_PROXY.trim();
-                }
-                try {
-                    // 1. 遍历扫描所有缓存键
-                    for (let i = 0; i < localStorage.length; i++) {
-                        const key = localStorage.key(i);
-                        if (!key) continue;
-                        const val = localStorage.getItem(key);
-                        if (!val) continue;
-
-                        const trimmedVal = val.trim();
-                        // 如果值直接是 url 且看起来像代理
-                        if (trimmedVal.startsWith('http') && (trimmedVal.includes('workers.dev') || trimmedVal.includes('herokuapp.com') || trimmedVal.includes('cors'))) {
-                            return trimmedVal;
-                        }
-
-                        // 如果值是 JSON 字符串，解析它并搜索
-                        if (val.startsWith('{') && val.endsWith('}')) {
-                            try {
-                                const obj = JSON.parse(val);
-                                const search = (o) => {
-                                    for (const k in o) {
-                                        if (typeof o[k] === 'string') {
-                                            const s = o[k].trim();
-                                            if (s.startsWith('http') && (s.includes('workers.dev') || s.includes('herokuapp.com') || s.toLowerCase().includes('cors') || s.toLowerCase().includes('proxy'))) {
-                                                return s;
-                                            }
-                                        } else if (typeof o[k] === 'object' && o[k] !== null) {
-                                            const res = search(o[k]);
-                                            if (res) return res;
-                                        }
-                                    }
-                                    return null;
-                                };
-                                const result = search(obj);
-                                if (result) return result;
-                            } catch (e) {}
-                        }
-                    }
-                } catch (e) {}
-                return '';
-            }
-
             const originalFetch = window.fetch;
             window.fetch = function(input, init) {
                 let url = typeof input === 'string' ? input : (input && input.url) ? input.url : '';
                 
-                // 拦截发往 NovelAI 官方的接口
+                // 只有发往 NovelAI 官方的请求才进行拦截重写
                 if (url && url.includes('api.novelai.net') && !url.includes('workers.dev') && !url.includes('herokuapp.com')) {
-                    const proxy = findProxyFromStorage();
+                    let proxy = '';
+                    try {
+                        proxy = localStorage.getItem('setting-nai-cors') || 
+                                localStorage.getItem('nai-cors') || 
+                                localStorage.getItem('nai_cors') || 
+                                localStorage.getItem('naiCors') || '';
+                    } catch (e) {}
+
+                    if (!proxy) {
+                        proxy = document.getElementById('setting-nai-cors')?.value || '';
+                    }
+
+                    proxy = proxy.trim();
                     if (proxy) {
                         let newUrl = '';
                         if (proxy.includes('?url=')) {
@@ -74,7 +34,7 @@
                             const cleanProxy = proxy.endsWith('/') ? proxy : proxy + '/';
                             newUrl = cleanProxy + url;
                         }
-                        console.log(`[CORS Patch] 成功拦截 NovelAI 请求. 重写为: ${newUrl}`);
+                        console.log(`[CORS Patch] 拦截 NovelAI 请求. 重写为: ${newUrl}`);
 
                         if (typeof input === 'object' && input !== null) {
                             input = new Request(newUrl, input);
@@ -87,7 +47,6 @@
             };
         })();
     </script>
-
 
     <link rel="stylesheet" href="css/style.css">
 </head>
